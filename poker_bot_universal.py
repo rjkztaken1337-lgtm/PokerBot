@@ -212,7 +212,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🃏 Отправьте мне текстовый файл (.txt) с раздачей или просто вставьте текст.\n"
         "Поддерживаются форматы: PokerStars, GG Poker, PartyPoker.\n\n"
-        "📌 *Команды:*\n"
+        "📌 Команды:\n"
         "/stats — как пользоваться\n"
         "/about — о боте\n"
         "/profile — ваш профиль\n"
@@ -221,8 +221,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/feedback — отзыв\n"
         "/terms — условия\n"
         "/reload — перезагрузить модель (только админ)\n"
-        "/retrain_now — переобучить модель на накопленных отзывах (админ)",
-        parse_mode='Markdown'
+        "/retrain_now — переобучить модель (только админ)"
     )
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
