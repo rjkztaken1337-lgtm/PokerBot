@@ -55,18 +55,24 @@ def load_postflop_models():
             with open("flop_encoder.pkl", "rb") as f:
                 flop_encoder = pickle.load(f)
             logger.info("Флоп-модель загружена")
+        else:
+            logger.warning("flop_model.pkl не найден")
         if os.path.exists("turn_model.pkl"):
             with open("turn_model.pkl", "rb") as f:
                 turn_model = pickle.load(f)
             with open("turn_encoder.pkl", "rb") as f:
                 turn_encoder = pickle.load(f)
             logger.info("Тёрн-модель загружена")
+        else:
+            logger.warning("turn_model.pkl не найден")
         if os.path.exists("river_model.pkl"):
             with open("river_model.pkl", "rb") as f:
                 river_model = pickle.load(f)
             with open("river_encoder.pkl", "rb") as f:
                 river_encoder = pickle.load(f)
             logger.info("Ривер-модель загружена")
+        else:
+            logger.warning("river_model.pkl не найден")
     except Exception as e:
         logger.error(f"Ошибка загрузки постфлоп-моделей: {e}")
 
@@ -156,6 +162,10 @@ def hand_features(cards_str):
             'gap':gap, 'hand_group':group}
 
 def parse_hand_advanced(content):
+    """
+    Расширенный парсер, извлекающий префлоп и постфлоп действия Hero.
+    Поддерживает как ***, так и * (GG Poker).
+    """
     result = {
         'hero_seat': None,
         'hero_position': None,
@@ -198,36 +208,45 @@ def parse_hand_advanced(content):
     if stack_match and result['big_blind'] > 0:
         result['hero_stack_pre_bb'] = float(stack_match.group(1)) / result['big_blind']
     
+    # Гибкие маркеры: могут быть *** или * (GG Poker)
     sections = {
-        'preflop': ('*** HOLE CARDS ***', '*** FLOP ***'),
-        'flop': ('*** FLOP ***', '*** TURN ***'),
-        'turn': ('*** TURN ***', '*** RIVER ***'),
-        'river': ('*** RIVER ***', '*** SHOW DOWN ***')
+        'preflop': (r'\*\*\*? HOLE CARDS \*\*\*?', r'\*\*\*? FLOP \*\*\*?'),
+        'flop': (r'\*\*\*? FLOP \*\*\*?', r'\*\*\*? TURN \*\*\*?'),
+        'turn': (r'\*\*\*? TURN \*\*\*?', r'\*\*\*? RIVER \*\*\*?'),
+        'river': (r'\*\*\*? RIVER \*\*\*?', r'\*\*\*? SHOW DOWN \*\*\*?')
     }
-    for street, (start_marker, end_marker) in sections.items():
-        start = content.find(start_marker)
-        if start == -1:
+    for street, (start_pattern, end_pattern) in sections.items():
+        start_match = re.search(start_pattern, content)
+        if not start_match:
             continue
-        end = content.find(end_marker, start) if end_marker else len(content)
+        start = start_match.end()
+        if end_pattern:
+            end_match = re.search(end_pattern, content[start:])
+            end = start + end_match.start() if end_match else len(content)
+        else:
+            end = len(content)
         block = content[start:end]
+        # Действие Hero
         pattern = r'Hero:\s*(folds|checks|calls|bets|raises)(?:\s*(?:\$?[\d\.]+)?\s*(?:to\s*\$?[\d\.]+)?)?'
         match = re.search(pattern, block, re.IGNORECASE)
         if match:
             action = match.group(1)
             result[f'{street}_action'] = action
+        # Количество оппонентов
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', block))
         players.discard('Hero')
         result[f'{street}_opponents'] = len(players)
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
-    # Извлечение карт стола
-    flop_match = re.search(r'\*\*\* FLOP \*\*\* \[([^]]+)\]', content)
+    
+    # Извлечение карт стола (гибкий поиск)
+    flop_match = re.search(r'\*\*\*? FLOP \*\*\*? \[([^]]+)\]', content)
     if flop_match:
         result['flop_cards'] = flop_match.group(1)
-    turn_match = re.search(r'\*\*\* TURN \*\*\* \[([^]]+)\]', content)
+    turn_match = re.search(r'\*\*\*? TURN \*\*\*? \[([^]]+)\]', content)
     if turn_match:
         result['turn_cards'] = turn_match.group(1)
-    river_match = re.search(r'\*\*\* RIVER \*\*\* \[([^]]+)\]', content)
+    river_match = re.search(r'\*\*\*? RIVER \*\*\*? \[([^]]+)\]', content)
     if river_match:
         result['river_cards'] = river_match.group(1)
     return result
@@ -441,20 +460,16 @@ async def postflop_command(update: Update, context: ContextTypes.DEFAULT_TYPE, s
     action_field = f'{street}_action'
     cards = parsed.get(cards_field)
     action = parsed.get(action_field)
-    if cards:
-        cards_text = f"Карты {street.upper()}: {cards}\n"
-    else:
-        cards_text = f"⚠️ Карты {street.upper()} не найдены в раздаче.\n"
+    cards_text = f"🃏 Карты {street.upper()}: {cards}" if cards else f"⚠️ Карты {street.upper()} не найдены в раздаче."
     if action:
-        await update.message.reply_text(f"{cards_text}ℹ️ В этой раздаче на {street.upper()} вы уже совершили действие: {action.upper()}.")
+        await update.message.reply_text(f"{cards_text}\nℹ️ В этой раздаче на {street.upper()} вы уже совершили действие: {action.upper()}.")
         return
-    # Получаем предсказание
     pred_action, confidence, _ = get_postflop_prediction(parsed, street)
     if pred_action is None:
-        await update.message.reply_text(f"{cards_text}❌ Модель для {street.upper()} не загружена или недостаточно данных.")
+        await update.message.reply_text(f"{cards_text}\n❌ Модель для {street.upper()} не загружена или недостаточно данных.")
         return
     emoji = {'fold':'🤚', 'call':'📞', 'bet':'💰', 'raise':'📈', 'check':'✅'}
-    reply = f"{cards_text}🎯 *Предсказание на {street.upper()}:* {pred_action.upper()} {emoji.get(pred_action, '')} (уверенность {confidence:.1%})"
+    reply = f"{cards_text}\n🎯 *Предсказание на {street.upper()}:* {pred_action.upper()} {emoji.get(pred_action, '')} (уверенность {confidence:.1%})"
     await update.message.reply_text(reply, parse_mode='Markdown')
 
 async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE):
