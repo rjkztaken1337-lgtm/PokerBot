@@ -157,9 +157,8 @@ def parse_hand_robust(content):
 # ---------- Команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🃏 Пришлите .txt файл с раздачей или текст раздачи"
-        "Поддерживаются форматы: PokerStars, GG Poker,"
-        "PartyPoker"
+        "🃏 Отправьте мне текстовый файл (.txt) с раздачей или просто вставьте текст.\n"
+        "Поддерживаются форматы: PokerStars, GG Poker, PartyPoker.\n\n"
         "📌 *Команды:*\n"
         "/stats — как пользоваться\n"
         "/about — о боте\n"
