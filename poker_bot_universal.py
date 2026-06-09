@@ -81,7 +81,7 @@ def update_feedback(pred_id, feedback):
 
 init_db()
 
-# ---------- Константы и парсер ----------
+# ---------- Константы и парсер (расширенный) ----------
 RANK_ORDER = {'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14}
 POS_ORDER = {'BTN':0,'SB':1,'BB':2,'CO':3,'MP3':4,'MP2':5,'MP1':6,'EP':7}
 rank_to_letter = {v:k for k,v in RANK_ORDER.items()}
@@ -122,11 +122,37 @@ def hand_features(cards_str):
     return {'is_pair':is_pair, 'suited':suited, 'high_card_rank':high, 'low_card_rank':low,
             'gap':gap, 'hand_group':group}
 
-def parse_hand_robust(content):
+def parse_hand_advanced(content):
+    """
+    Расширенный парсер, извлекающий префлоп и постфлоп действия Hero.
+    Возвращает словарь с полями:
+      - hero_position, hero_hole_cards, hero_stack_pre_bb, big_blind
+      - preflop_action, preflop_opponents
+      - flop_action, flop_opponents, flop_cbet
+      - turn_action, turn_opponents
+      - river_action, river_opponents
+    """
     result = {
-        'hero_seat': None, 'hero_position': None, 'hero_hole_cards': None,
-        'hero_stack_pre_bb': 0.0, 'num_opponents_preflop': 0, 'big_blind': 1.0
+        'hero_seat': None,
+        'hero_position': None,
+        'hero_hole_cards': None,
+        'big_blind': 1.0,
+        'hero_stack_pre_bb': 0.0,
+        # Префлоп
+        'preflop_action': None,
+        'preflop_opponents': 0,
+        # Флоп
+        'flop_action': None,
+        'flop_opponents': 0,
+        'flop_cbet': 0,
+        # Тёрн
+        'turn_action': None,
+        'turn_opponents': 0,
+        # Ривер
+        'river_action': None,
+        'river_opponents': 0,
     }
+    # Базовая информация
     blinds = re.search(r'\$([\d\.]+)/\$([\d\.]+)', content)
     if blinds:
         result['big_blind'] = float(blinds.group(2))
@@ -149,9 +175,34 @@ def parse_hand_robust(content):
     stack_match = re.search(r'Seat\s+%d:\s+Hero\s+\(\$([\d\.]+)' % hero_seat, content)
     if stack_match and result['big_blind'] > 0:
         result['hero_stack_pre_bb'] = float(stack_match.group(1)) / result['big_blind']
-    players = set(re.findall(r'([A-Za-z0-9]+):\s*(?:folds|raises|calls|bets|checks)', content))
-    players.discard('Hero')
-    result['num_opponents_preflop'] = len(players)
+    
+    # ---- Извлечение действий по улицам ----
+    sections = {
+        'preflop': ('*** HOLE CARDS ***', '*** FLOP ***'),
+        'flop': ('*** FLOP ***', '*** TURN ***'),
+        'turn': ('*** TURN ***', '*** RIVER ***'),
+        'river': ('*** RIVER ***', '*** SHOW DOWN ***')
+    }
+    for street, (start_marker, end_marker) in sections.items():
+        start = content.find(start_marker)
+        if start == -1:
+            continue
+        end = content.find(end_marker, start) if end_marker else len(content)
+        block = content[start:end]
+        # Действие Hero
+        pattern = r'Hero:\s*(folds|checks|calls|bets|raises)(?:\s*(?:\$?[\d\.]+)?\s*(?:to\s*\$?[\d\.]+)?)?'
+        match = re.search(pattern, block, re.IGNORECASE)
+        if match:
+            action = match.group(1)
+            result[f'{street}_action'] = action
+        # Количество оппонентов
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', block))
+        players.discard('Hero')
+        result[f'{street}_opponents'] = len(players)
+    
+    # Конт-бет на флопе: если Hero сделал bet или raise на флопе
+    if result['flop_action'] in ['bets', 'raises']:
+        result['flop_cbet'] = 1
     return result
 
 # ---------- Команды ----------
@@ -180,18 +231,19 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "4️⃣ Получите предсказание: 🤚 Fold, 📞 Call, 📈 Raise или ✅ Check.\n"
         "5️⃣ Оцените точность кнопками ✅/❌ – это поможет улучшить модель.\n\n"
         "✨ *Дополнительно:*\n"
-        "/analysis – подробный разбор последней руки\n"
+        "/analysis – подробный разбор последней руки (включая постфлоп)\n"
         "/explain – понятное объяснение, почему бот дал такой совет"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v2.0*\n\n"
+        "🤖 *Poker Oracle Bot v2.1* (с поддержкой постфлопа)\n\n"
         "🧠 *Модель:* Random Forest, обучена на реальных раздачах.\n"
         "📊 *Признаки:* позиция, сила руки, стек в BB, количество оппонентов.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
-        "📈 *Функции:* предсказание действий, сбор обратной связи, дообучение, объяснение решений.\n\n"
+        "📈 *Функции:* предсказание действий, сбор обратной связи, дообучение, объяснение решений.\n"
+        "🃏 *Новое:* анализ действий на флопе, тёрне и ривере в команде /analysis.\n\n"
         "© 2026 | Сделано с любовью к покеру и AI"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -214,7 +266,7 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🃏 *Карты:* {last['cards']}\n"
         f"📌 *Позиция:* {last['position']}\n"
         f"💰 *Стек в BB:* {last['stack_bb']:.1f}\n"
-        f"👥 *Оппонентов:* {last['opponents']}\n\n"
+        f"👥 *Оппонентов на префлопе:* {last['opponents']}\n\n"
         f"📊 *Признаки:*\n"
         f"• Пара: {'да' if last['is_pair'] else 'нет'}\n"
         f"• Одномастные: {'да' if last['suited'] else 'нет'}\n"
@@ -222,8 +274,17 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Младшая карта: {last['low_card']}\n"
         f"• Разрыв (gap): {last['gap']}\n"
         f"• Группа руки: {last['hand_group']}\n\n"
-        f"🤖 *Предсказание:* **{last['action'].upper()}** (уверенность {last['confidence']:.1%})"
+        f"🤖 *Предсказание на префлопе:* **{last['action'].upper()}** (уверенность {last['confidence']:.1%})\n"
     )
+    # Добавляем постфлоп информацию, если есть
+    if 'flop_action' in last and last['flop_action']:
+        text += f"\n♣️ *Флоп:* действие Hero — {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
+        if last.get('flop_cbet'):
+            text += " (конт-бет ✅)"
+    if 'turn_action' in last and last['turn_action']:
+        text += f"\n♦️ *Тёрн:* действие Hero — {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
+    if 'river_action' in last and last['river_action']:
+        text += f"\n♥️ *Ривер:* действие Hero — {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -297,7 +358,7 @@ async def reload_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Ошибка перезагрузки модели.")
 
-# ---------- Обработка предсказаний ----------
+# ---------- Обработка предсказаний (с расширенным парсером) ----------
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if model is None:
         await update.message.reply_text("❌ Модель не загружена.")
@@ -334,14 +395,15 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
         first = re.search(r'(Poker Hand #.*?)(?=Poker Hand #|$)', text, re.DOTALL)
         if first:
             text = first.group(1)
-    parsed = parse_hand_robust(text)
+    # Используем расширенный парсер
+    parsed = parse_hand_advanced(text)
     if not parsed or not parsed['hero_hole_cards']:
         await update.message.reply_text("❌ Не удалось распознать раздачу. Убедитесь в формате.")
         return
     card_feats = hand_features(parsed['hero_hole_cards'])
     pos_num = POS_ORDER.get(parsed['hero_position'], 7)
     features = [
-        pos_num, parsed['hero_stack_pre_bb'], parsed['num_opponents_preflop'],
+        pos_num, parsed['hero_stack_pre_bb'], parsed['preflop_opponents'],
         card_feats['is_pair'], card_feats['suited'],
         card_feats['high_card_rank'], card_feats['low_card_rank'],
         card_feats['gap'], card_feats['hand_group']
@@ -361,11 +423,12 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
 
     high_char = rank_to_letter.get(card_feats['high_card_rank'], str(card_feats['high_card_rank']))
     low_char = rank_to_letter.get(card_feats['low_card_rank'], str(card_feats['low_card_rank']))
+    # Сохраняем полную информацию, включая постфлоп
     context.user_data['last_hand_info'] = {
         'cards': parsed['hero_hole_cards'],
         'position': parsed['hero_position'],
         'stack_bb': parsed['hero_stack_pre_bb'],
-        'opponents': parsed['num_opponents_preflop'],
+        'opponents': parsed['preflop_opponents'],
         'is_pair': card_feats['is_pair'],
         'suited': card_feats['suited'],
         'high_card': high_char,
@@ -375,7 +438,15 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
         'gap': card_feats['gap'],
         'hand_group': card_feats['hand_group'],
         'action': action,
-        'confidence': confidence
+        'confidence': confidence,
+        # Постфлоп
+        'flop_action': parsed['flop_action'],
+        'flop_opponents': parsed['flop_opponents'],
+        'flop_cbet': parsed['flop_cbet'],
+        'turn_action': parsed['turn_action'],
+        'turn_opponents': parsed['turn_opponents'],
+        'river_action': parsed['river_action'],
+        'river_opponents': parsed['river_opponents']
     }
     context.user_data['predictions'] = context.user_data.get('predictions', 0) + 1
 
