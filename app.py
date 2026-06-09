@@ -1,4 +1,3 @@
-# app.py
 import os
 import threading
 from flask import Flask
@@ -14,15 +13,15 @@ def health():
 def health_check():
     return "OK", 200
 
-def run_bot():
-    main()
-
-if __name__ == '__main__':
-    # Запускаем бота в отдельном фоновом потоке
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
-
-    # Запускаем Flask-сервер на порту, который назначает Render
+def run_flask():
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
+if __name__ == '__main__':
+    # Запускаем Flask в фоновом потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # Запускаем бота в основном потоке (он сам обработает сигналы)
+    main()
