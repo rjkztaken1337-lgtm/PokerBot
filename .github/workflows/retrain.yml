@@ -1,0 +1,26 @@
+name: Retrain Model
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # каждый день в 3:00 UTC
+  workflow_dispatch:      # возможность запуска вручную
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install pandas numpy scikit-learn
+      - name: Run retraining script
+        run: python auto_retrain.py
+      - name: Commit and push new model
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add poker_model.pkl poker_encoder.pkl
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-retrain model [skip ci]"
+          git push
