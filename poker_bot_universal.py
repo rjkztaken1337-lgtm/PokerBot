@@ -164,7 +164,7 @@ def hand_features(cards_str):
 def parse_hand_advanced(content):
     """
     Расширенный парсер, извлекающий префлоп и постфлоп действия Hero.
-    Поддерживает как ***, так и * (GG Poker).
+    Поддерживает как ***, так и * (GG Poker) с пробелами.
     """
     result = {
         'hero_seat': None,
@@ -210,18 +210,18 @@ def parse_hand_advanced(content):
     
     # Гибкие маркеры: могут быть *** или * (GG Poker)
     sections = {
-        'preflop': (r'\*\*\*? HOLE CARDS \*\*\*?', r'\*\*\*? FLOP \*\*\*?'),
-        'flop': (r'\*\*\*? FLOP \*\*\*?', r'\*\*\*? TURN \*\*\*?'),
-        'turn': (r'\*\*\*? TURN \*\*\*?', r'\*\*\*? RIVER \*\*\*?'),
-        'river': (r'\*\*\*? RIVER \*\*\*?', r'\*\*\*? SHOW DOWN \*\*\*?')
+        'preflop': (r'\*\*\*?\s*HOLE CARDS\s*\*\*\*?', r'\*\*\*?\s*FLOP\s*\*\*\*?'),
+        'flop': (r'\*\*\*?\s*FLOP\s*\*\*\*?', r'\*\*\*?\s*TURN\s*\*\*\*?'),
+        'turn': (r'\*\*\*?\s*TURN\s*\*\*\*?', r'\*\*\*?\s*RIVER\s*\*\*\*?'),
+        'river': (r'\*\*\*?\s*RIVER\s*\*\*\*?', r'\*\*\*?\s*SHOW DOWN\s*\*\*\*?')
     }
     for street, (start_pattern, end_pattern) in sections.items():
-        start_match = re.search(start_pattern, content)
+        start_match = re.search(start_pattern, content, re.IGNORECASE)
         if not start_match:
             continue
         start = start_match.end()
         if end_pattern:
-            end_match = re.search(end_pattern, content[start:])
+            end_match = re.search(end_pattern, content[start:], re.IGNORECASE)
             end = start + end_match.start() if end_match else len(content)
         else:
             end = len(content)
@@ -240,13 +240,13 @@ def parse_hand_advanced(content):
         result['flop_cbet'] = 1
     
     # Извлечение карт стола (гибкий поиск)
-    flop_match = re.search(r'\*\*\*? FLOP \*\*\*? \[([^]]+)\]', content)
+    flop_match = re.search(r'\*\*\*?\s*FLOP\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
     if flop_match:
         result['flop_cards'] = flop_match.group(1)
-    turn_match = re.search(r'\*\*\*? TURN \*\*\*? \[([^]]+)\]', content)
+    turn_match = re.search(r'\*\*\*?\s*TURN\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
     if turn_match:
         result['turn_cards'] = turn_match.group(1)
-    river_match = re.search(r'\*\*\*? RIVER \*\*\*? \[([^]]+)\]', content)
+    river_match = re.search(r'\*\*\*?\s*RIVER\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
     if river_match:
         result['river_cards'] = river_match.group(1)
     return result
@@ -387,20 +387,20 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Группа руки: {last['hand_group']}\n\n"
         f"🤖 *Предсказание на префлопе:* **{last['action'].upper()}** (уверенность {last['confidence']:.1%})\n"
     )
-    if 'flop_cards' in last and last['flop_cards']:
+    if last.get('flop_cards'):
         text += f"\n♣️ *Флоп:* {last['flop_cards']}"
-    if 'flop_action' in last and last['flop_action']:
-        text += f", действие Hero — {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
-        if last.get('flop_cbet'):
-            text += " (конт-бет ✅)"
-    if 'turn_cards' in last and last['turn_cards']:
+        if last.get('flop_action'):
+            text += f", действие Hero — {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
+            if last.get('flop_cbet'):
+                text += " (конт-бет ✅)"
+    if last.get('turn_cards'):
         text += f"\n♦️ *Тёрн:* {last['turn_cards']}"
-    if 'turn_action' in last and last['turn_action']:
-        text += f", действие Hero — {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
-    if 'river_cards' in last and last['river_cards']:
+        if last.get('turn_action'):
+            text += f", действие Hero — {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
+    if last.get('river_cards'):
         text += f"\n♥️ *Ривер:* {last['river_cards']}"
-    if 'river_action' in last and last['river_action']:
-        text += f", действие Hero — {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
+        if last.get('river_action'):
+            text += f", действие Hero — {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,10 +456,8 @@ async def postflop_command(update: Update, context: ContextTypes.DEFAULT_TYPE, s
     if not parsed:
         await update.message.reply_text("❌ Нет данных о последней руке. Сначала отправьте раздачу.")
         return
-    cards_field = f'{street}_cards'
-    action_field = f'{street}_action'
-    cards = parsed.get(cards_field)
-    action = parsed.get(action_field)
+    cards = parsed.get(f'{street}_cards')
+    action = parsed.get(f'{street}_action')
     cards_text = f"🃏 Карты {street.upper()}: {cards}" if cards else f"⚠️ Карты {street.upper()} не найдены в раздаче."
     if action:
         await update.message.reply_text(f"{cards_text}\nℹ️ В этой раздаче на {street.upper()} вы уже совершили действие: {action.upper()}.")
