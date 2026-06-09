@@ -12,7 +12,7 @@ from sklearn.preprocessing import LabelEncoder
 from ast import literal_eval
 
 ORIGINAL_CSV = "poker_hands_fixed.csv"
-DB_PATH = "/Users/user/Desktop/PokerBot/feedback.db"
+DB_PATH = "feedback.db"
 MODEL_OUT = "poker_model.pkl"
 ENCODER_OUT = "poker_encoder.pkl"
 
@@ -56,10 +56,14 @@ def load_original_data():
     y = df[TARGET_COL]
     return X, y
 
+import os
+
 def load_feedback_data():
+    if not os.path.exists(DB_PATH):
+        print(f"Файл базы данных {DB_PATH} не найден, пропускаем загрузку отзывов.")
+        return None, None
     conn = sqlite3.connect(DB_PATH)
-    query = "SELECT features, predicted_action FROM predictions WHERE user_feedback = 'yes'"
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query("SELECT features, predicted_action FROM predictions WHERE user_feedback = 'yes'", conn)
     conn.close()
     if df.empty:
         return None, None
