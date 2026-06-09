@@ -414,51 +414,141 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    info = context.user_data.get('last_hand_info')
-    if not info:
-        await update.message.reply_text("❌ Нет данных для объяснения. Сначала отправьте раздачу.")
+    parsed = context.user_data.get('last_parsed_hand')
+    if not parsed:
+        await update.message.reply_text("❌ Нет данных о последней руке. Сначала отправьте раздачу.")
         return
-    action = info['action'].upper()
-    confidence = info['confidence']
-    cards = info['cards']
-    position = info['position']
-    opponents = info['opponents']
-    stack = info['stack_bb']
-    is_pair = info['is_pair']
-    suited = info['suited']
-    high = info['high_card']
-    low = info['low_card']
 
-    reasons = []
+    # Получаем информацию о последней руке для префлопа (из last_hand_info)
+    info = context.user_data.get('last_hand_info', {})
+    preflop_action = info.get('action', '?').upper()
+    preflop_confidence = info.get('confidence', 0)
+
+    # Подготовка текста
+    cards = info.get('cards', '?')
+    position = info.get('position', '?')
+    stack = info.get('stack_bb', 0)
+    opponents_pre = info.get('opponents', 0)
+
+    # Текст объяснения префлопа (как ранее, но компактнее)
+    high = info.get('high_card', '?')
+    low = info.get('low_card', '?')
+    is_pair = info.get('is_pair', False)
+    suited = info.get('suited', False)
+
+    # Объяснение префлоп-решения
+    reasons_pre = []
     if is_pair:
         if high in ['A','K','Q','J','T']:
-            reasons.append(f"🔹 Сильная карманная пара ({high}{high})")
+            reasons_pre.append(f"Карманная пара {high}{high} – сильная рука")
         else:
-            reasons.append(f"🔹 Слабая пара ({high}{high})")
+            reasons_pre.append(f"Карманная пара {high}{high} – средняя")
     else:
         if suited and high in ['A','K','Q','J']:
-            reasons.append(f"🔹 Хорошая одномастная рука ({high}{low} одномастные)")
+            reasons_pre.append(f"Одномастная рука {high}{low} – хорошая")
         else:
-            reasons.append(f"🔹 Слабая рука ({high}{low}, не пара, не одномастные)")
+            reasons_pre.append(f"Рука {high}{low}, не пара, не одномастные – слабая")
     if position in ['EP','MP1','MP2']:
-        reasons.append(f"🔹 Ранняя позиция ({position}) – рискованно")
+        reasons_pre.append(f"Позиция {position} – ранняя, рискованно")
     elif position in ['MP3','CO']:
-        reasons.append(f"🔹 Средняя позиция ({position})")
+        reasons_pre.append(f"Позиция {position} – средняя")
     else:
-        reasons.append(f"🔹 Поздняя позиция ({position}) – преимущество")
-    if opponents >= 4:
-        reasons.append(f"🔹 Много оппонентов ({opponents}) – нужна сильная рука")
+        reasons_pre.append(f"Позиция {position} – поздняя, преимущество")
+    if opponents_pre >= 4:
+        reasons_pre.append(f"Много оппонентов ({opponents_pre}) – нужна сильная рука")
     if stack < 20:
-        reasons.append(f"🔹 Короткий стек ({stack:.0f} BB) – либо оллин, либо фолд")
-    conclusion = {
-        'FOLD': '🎯 Модель советует **СБРОСИТЬ**',
-        'CALL': '🎯 Модель советует **УРАВНЯТЬ**',
-        'RAISE': '🎯 Модель советует **ПОВЫСИТЬ**',
-        'CHECK': '🎯 Модель советует **ЧЕКНУТЬ**'
-    }.get(action, '')
-    text = f"🔍 *Объяснение:* {action} (уверенность {confidence:.0%})\n\n"
-    text += "\n".join(reasons)
-    text += f"\n\n{conclusion}"
+        reasons_pre.append(f"Короткий стек ({stack:.0f} BB)")
+
+    conclusion_pre = {
+        'FOLD': 'Модель советует **СБРОСИТЬ**',
+        'CALL': 'Модель советует **УРАВНЯТЬ**',
+        'RAISE': 'Модель советует **ПОВЫСИТЬ**',
+        'CHECK': 'Модель советует **ЧЕКНУТЬ**'
+    }.get(preflop_action, 'Модель не определилась')
+
+    # Формируем ответ
+    text = (
+        f"🔍 *Объяснение действий в раздаче*\n\n"
+        f"🃏 *Ваша рука:* {cards} | *Позиция:* {position} | *Стек:* {stack:.0f} BB\n"
+    )
+
+    # ---- Префлоп ----
+    text += f"\n📌 *Префлоп* (реальное действие: {preflop_action})\n"
+    text += "• " + "\n• ".join(reasons_pre)
+    text += f"\n🎯 *Рекомендация:* {conclusion_pre} (уверенность {preflop_confidence:.0%})\n"
+
+    # ---- Флоп ----
+    flop_cards = parsed.get('flop_cards')
+    if flop_cards:
+        flop_real = parsed.get('flop_action')
+        if flop_real:
+            # Получаем предсказание модели для флопа
+            pred_action, confidence_flop, _ = get_postflop_prediction(parsed, 'flop')
+            if pred_action:
+                emoji_ok = "✅" if pred_action == flop_real else "❌"
+                text += f"\n♣️ *Флоп* [{flop_cards}] – вы {flop_real.upper()} (уверенность модели: {confidence_flop:.0%}) {emoji_ok}\n"
+                if pred_action != flop_real:
+                    text += f"   💡 *Альтернатива:* модель предлагала {pred_action.upper()}. "
+                    if pred_action == 'bet':
+                        text += "Ставка могла бы вынудить оппонента сброситься или дать дополнительное давление."
+                    elif pred_action == 'check':
+                        text += "Чек дал бы возможность увидеть следующую карту дёшево."
+                    elif pred_action == 'raise':
+                        text += "Рейз увеличил бы банк и мог бы забрать пот сразу."
+                    elif pred_action == 'fold':
+                        text += "Фолд спас бы ваши фишки при слабой руке."
+                else:
+                    text += "   Решение совпало с рекомендацией модели – хороший выбор!"
+        else:
+            # Hero не действовал на флопе – возможно, фолд или чек?
+            text += f"\n♣️ *Флоп* [{flop_cards}] – вы не совершали действий (возможно, чек или фолд)."
+
+    # ---- Тёрн ----
+    turn_cards = parsed.get('turn_cards')
+    if turn_cards:
+        turn_real = parsed.get('turn_action')
+        if turn_real:
+            pred_action, confidence_turn, _ = get_postflop_prediction(parsed, 'turn')
+            if pred_action:
+                emoji_ok = "✅" if pred_action == turn_real else "❌"
+                text += f"\n♦️ *Тёрн* [{turn_cards}] – вы {turn_real.upper()} (уверенность модели: {confidence_turn:.0%}) {emoji_ok}\n"
+                if pred_action != turn_real:
+                    text += f"   💡 *Альтернатива:* модель предлагала {pred_action.upper()}. "
+                    if pred_action == 'bet':
+                        text += "Ставка продолжила бы давление."
+                    elif pred_action == 'check':
+                        text += "Чек позволил бы контролировать пот."
+                    elif pred_action == 'raise':
+                        text += "Рейз мог бы заставить оппонента сброситься."
+                    elif pred_action == 'fold':
+                        text += "Фолд минимизировал бы потери на слабой руке."
+                else:
+                    text += "   Решение совпало с рекомендацией модели – хороший выбор!"
+        else:
+            text += f"\n♦️ *Тёрн* [{turn_cards}] – вы не совершали действий."
+
+    # ---- Ривер ----
+    river_cards = parsed.get('river_cards')
+    if river_cards:
+        river_real = parsed.get('river_action')
+        if river_real:
+            pred_action, confidence_river, _ = get_postflop_prediction(parsed, 'river')
+            if pred_action:
+                emoji_ok = "✅" if pred_action == river_real else "❌"
+                text += f"\n♥️ *Ривер* [{river_cards}] – вы {river_real.upper()} (уверенность модели: {confidence_river:.0%}) {emoji_ok}\n"
+                if pred_action != river_real:
+                    text += f"   💡 *Альтернатива:* модель предлагала {pred_action.upper()}. "
+                    if pred_action == 'bet':
+                        text += "Ставка могла бы быть блефом или ставкой на велью."
+                    elif pred_action == 'check':
+                        text += "Чек хорош для показания слабой руки."
+                    elif pred_action == 'fold':
+                        text += "Фолд сохранил бы фишки."
+                else:
+                    text += "   Решение совпало с рекомендацией модели – отличный выбор!"
+        else:
+            text += f"\n♥️ *Ривер* [{river_cards}] – вы не совершали действий."
+
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def postflop_command(update: Update, context: ContextTypes.DEFAULT_TYPE, street: str):
