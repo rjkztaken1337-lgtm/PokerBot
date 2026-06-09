@@ -55,24 +55,18 @@ def load_postflop_models():
             with open("flop_encoder.pkl", "rb") as f:
                 flop_encoder = pickle.load(f)
             logger.info("Флоп-модель загружена")
-        else:
-            logger.warning("Флоп-модель не найдена")
         if os.path.exists("turn_model.pkl"):
             with open("turn_model.pkl", "rb") as f:
                 turn_model = pickle.load(f)
             with open("turn_encoder.pkl", "rb") as f:
                 turn_encoder = pickle.load(f)
             logger.info("Тёрн-модель загружена")
-        else:
-            logger.warning("Тёрн-модель не найдена")
         if os.path.exists("river_model.pkl"):
             with open("river_model.pkl", "rb") as f:
                 river_model = pickle.load(f)
             with open("river_encoder.pkl", "rb") as f:
                 river_encoder = pickle.load(f)
             logger.info("Ривер-модель загружена")
-        else:
-            logger.warning("Ривер-модель не найдена")
     except Exception as e:
         logger.error(f"Ошибка загрузки постфлоп-моделей: {e}")
 
@@ -173,10 +167,13 @@ def parse_hand_advanced(content):
         'flop_action': None,
         'flop_opponents': 0,
         'flop_cbet': 0,
+        'flop_cards': None,
         'turn_action': None,
         'turn_opponents': 0,
+        'turn_cards': None,
         'river_action': None,
         'river_opponents': 0,
+        'river_cards': None,
     }
     blinds = re.search(r'\$([\d\.]+)/\$([\d\.]+)', content)
     if blinds:
@@ -223,6 +220,16 @@ def parse_hand_advanced(content):
         result[f'{street}_opponents'] = len(players)
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
+    # Извлечение карт стола
+    flop_match = re.search(r'\*\*\* FLOP \*\*\* \[([^]]+)\]', content)
+    if flop_match:
+        result['flop_cards'] = flop_match.group(1)
+    turn_match = re.search(r'\*\*\* TURN \*\*\* \[([^]]+)\]', content)
+    if turn_match:
+        result['turn_cards'] = turn_match.group(1)
+    river_match = re.search(r'\*\*\* RIVER \*\*\* \[([^]]+)\]', content)
+    if river_match:
+        result['river_cards'] = river_match.group(1)
     return result
 
 # ---------- Вспомогательная функция для постфлоп-предсказания ----------
@@ -251,7 +258,6 @@ def get_postflop_prediction(parsed, street):
         'hand_group': card_feats['hand_group'],
         'opponents': opponents,
     }
-    # Для turn/river добавим предыдущее действие
     if street == 'turn':
         prev_action = parsed.get('flop_action', 'none')
         features['flop_action'] = prev_action
@@ -316,7 +322,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "4️⃣ Получите предсказание: 🤚 Fold, 📞 Call, 📈 Raise или ✅ Check.\n"
         "5️⃣ Оцените точность кнопками ✅/❌ – это поможет улучшить модель.\n\n"
         "✨ *Дополнительно:*\n"
-        "/analysis – подробный разбор последней руки (включая постфлоп)\n"
+        "/analysis – подробный разбор последней руки (включая постфлоп и карты стола)\n"
         "/explain – понятное объяснение, почему бот дал такой совет\n"
         "/flop, /turn, /river – предсказания на соответствующих улицах (если есть данные)"
     )
@@ -324,12 +330,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v2.2* (с поддержкой постфлоп-предсказаний)\n\n"
+        "🤖 *Poker Oracle Bot v2.3* (с отображением карт флопа, тёрна, ривера)\n\n"
         "🧠 *Модели:* Random Forest для префлопа, флопа, тёрна, ривера.\n"
         "📊 *Признаки:* позиция, сила руки, стек, оппоненты, предыдущие действия.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
         "📈 *Функции:* предсказание действий, сбор обратной связи, переобучение, объяснение решений.\n"
-        "🃏 *Новое:* предсказания на флопе, тёрне и ривере через команды /flop, /turn, /river.\n\n"
+        "🃏 *Новое:* показ карт стола в /analysis и отдельных командах.\n\n"
         "© 2026 | Сделано с любовью к покеру и AI"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -362,14 +368,20 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Группа руки: {last['hand_group']}\n\n"
         f"🤖 *Предсказание на префлопе:* **{last['action'].upper()}** (уверенность {last['confidence']:.1%})\n"
     )
+    if 'flop_cards' in last and last['flop_cards']:
+        text += f"\n♣️ *Флоп:* {last['flop_cards']}"
     if 'flop_action' in last and last['flop_action']:
-        text += f"\n♣️ *Флоп:* действие Hero — {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
+        text += f", действие Hero — {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
         if last.get('flop_cbet'):
             text += " (конт-бет ✅)"
+    if 'turn_cards' in last and last['turn_cards']:
+        text += f"\n♦️ *Тёрн:* {last['turn_cards']}"
     if 'turn_action' in last and last['turn_action']:
-        text += f"\n♦️ *Тёрн:* действие Hero — {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
+        text += f", действие Hero — {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
+    if 'river_cards' in last and last['river_cards']:
+        text += f"\n♥️ *Ривер:* {last['river_cards']}"
     if 'river_action' in last and last['river_action']:
-        text += f"\n♥️ *Ривер:* действие Hero — {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
+        text += f", действие Hero — {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -425,16 +437,24 @@ async def postflop_command(update: Update, context: ContextTypes.DEFAULT_TYPE, s
     if not parsed:
         await update.message.reply_text("❌ Нет данных о последней руке. Сначала отправьте раздачу.")
         return
-    action = parsed.get(f'{street}_action')
+    cards_field = f'{street}_cards'
+    action_field = f'{street}_action'
+    cards = parsed.get(cards_field)
+    action = parsed.get(action_field)
+    if cards:
+        cards_text = f"Карты {street.upper()}: {cards}\n"
+    else:
+        cards_text = f"⚠️ Карты {street.upper()} не найдены в раздаче.\n"
     if action:
-        await update.message.reply_text(f"ℹ️ В этой раздаче на {street.upper()} вы уже совершили действие: {action.upper()}.")
+        await update.message.reply_text(f"{cards_text}ℹ️ В этой раздаче на {street.upper()} вы уже совершили действие: {action.upper()}.")
         return
+    # Получаем предсказание
     pred_action, confidence, _ = get_postflop_prediction(parsed, street)
     if pred_action is None:
-        await update.message.reply_text(f"❌ Модель для {street.upper()} не загружена или недостаточно данных.")
+        await update.message.reply_text(f"{cards_text}❌ Модель для {street.upper()} не загружена или недостаточно данных.")
         return
     emoji = {'fold':'🤚', 'call':'📞', 'bet':'💰', 'raise':'📈', 'check':'✅'}
-    reply = f"🎯 *Предсказание на {street.upper()}:* {pred_action.upper()} {emoji.get(pred_action, '')} (уверенность {confidence:.1%})"
+    reply = f"{cards_text}🎯 *Предсказание на {street.upper()}:* {pred_action.upper()} {emoji.get(pred_action, '')} (уверенность {confidence:.1%})"
     await update.message.reply_text(reply, parse_mode='Markdown')
 
 async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -517,7 +537,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text.startswith('/'):
         return
-    # Режим ожидания отзыва
     if context.user_data.get('awaiting_feedback'):
         context.user_data['awaiting_feedback'] = False
         user = update.effective_user
@@ -543,7 +562,6 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
     if not parsed or not parsed['hero_hole_cards']:
         await update.message.reply_text("❌ Не удалось распознать раздачу. Убедитесь в формате.")
         return
-    # Сохраняем parsed для постфлоп-команд
     context.user_data['last_parsed_hand'] = parsed
 
     card_feats = hand_features(parsed['hero_hole_cards'])
@@ -584,11 +602,14 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
         'hand_group': card_feats['hand_group'],
         'action': action,
         'confidence': confidence,
+        'flop_cards': parsed['flop_cards'],
         'flop_action': parsed['flop_action'],
         'flop_opponents': parsed['flop_opponents'],
         'flop_cbet': parsed['flop_cbet'],
+        'turn_cards': parsed['turn_cards'],
         'turn_action': parsed['turn_action'],
         'turn_opponents': parsed['turn_opponents'],
+        'river_cards': parsed['river_cards'],
         'river_action': parsed['river_action'],
         'river_opponents': parsed['river_opponents']
     }
