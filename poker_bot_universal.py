@@ -338,8 +338,9 @@ async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📝 Напишите ваш отзыв или пожелание. Администратор получит его.")
-
+    context.user_data['awaiting_feedback'] = True
+    await update.message.reply_text("📝 Напишите ваш отзыв или пожелание одним сообщением. Администратор получит его.")
+    
 async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "⚖️ *Условия использования*\n\n"
@@ -410,8 +411,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text.startswith('/'):
         return
+    
+    # Проверка: ждём ли отзыв от пользователя?
+    if context.user_data.get('awaiting_feedback'):
+        context.user_data['awaiting_feedback'] = False
+        user = update.effective_user
+        feedback_text = f"📝 *Новый отзыв*\nОт: @{user.username or user.first_name} (ID: {user.id})\n\n{text}"
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=feedback_text, parse_mode='Markdown')
+            await update.message.reply_text("🙏 Спасибо за ваш отзыв! Он передан администратору.")
+        except Exception as e:
+            logger.error(f"Не удалось отправить отзыв админу: {e}")
+            await update.message.reply_text("❌ Не удалось отправить отзыв. Попробуйте позже.")
+        return
+    
+    # Если не режим отзыва — обрабатываем как раздачу
     await predict(update, text, context)
-
+    if ADMIN_ID == 0:
+    await update.message.reply_text("❌ Администратор не настроен. Отзыв не может быть отправлен.")
+    return
+    
 async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE):
     # Извлекаем первую раздачу
     if 'Poker Hand #' in text:
