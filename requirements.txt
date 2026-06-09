@@ -1,5 +1,5 @@
-python-telegram-bot>=20.0
-numpy
-scikit-learn
-pandas
-Flask
+python-telegram-bot==20.7
+numpy==1.26.3
+scikit-learn==1.4.0
+pandas==2.1.4
+Flask==3.0.0
