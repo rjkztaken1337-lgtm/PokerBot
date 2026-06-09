@@ -4,6 +4,8 @@ import re
 import pickle
 import logging
 import sqlite3
+import subprocess
+import sys
 import numpy as np
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -218,7 +220,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/explain — объяснение последнего предсказания\n"
         "/feedback — отзыв\n"
         "/terms — условия\n"
-        "/reload — перезагрузить модель (только админ)",
+        "/reload — перезагрузить модель (только админ)\n"
+        "/retrain_now — переобучить модель на накопленных отзывах (админ)",
         parse_mode='Markdown'
     )
 
@@ -358,6 +361,27 @@ async def reload_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Ошибка перезагрузки модели.")
 
+async def retrain_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+    await update.message.reply_text("🔄 Запускаю переобучение модели (может занять до минуты)...")
+    try:
+        # Запускаем auto_retrain.py
+        result = subprocess.run([sys.executable, "auto_retrain.py"], capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            await update.message.reply_text("✅ Переобучение завершено. Перезагружаю модель...")
+            if load_model_files():
+                await update.message.reply_text("✅ Модель успешно перезагружена.")
+            else:
+                await update.message.reply_text("❌ Модель переобучена, но не удалось загрузить файлы модели.")
+        else:
+            await update.message.reply_text(f"❌ Ошибка переобучения:\n{result.stderr[:1000]}")
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("❌ Превышено время ожидания (120 секунд).")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Исключение: {e}")
+
 # ---------- Обработка предсказаний (с расширенным парсером) ----------
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if model is None:
@@ -474,6 +498,7 @@ def main():
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("terms", terms))
     app.add_handler(CommandHandler("reload", reload_model))
+    app.add_handler(CommandHandler("retrain_now", retrain_now))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(callback_handler))
