@@ -55,24 +55,18 @@ def load_postflop_models():
             with open("flop_encoder.pkl", "rb") as f:
                 flop_encoder = pickle.load(f)
             logger.info("Флоп-модель загружена")
-        else:
-            logger.warning("flop_model.pkl не найден")
         if os.path.exists("turn_model.pkl"):
             with open("turn_model.pkl", "rb") as f:
                 turn_model = pickle.load(f)
             with open("turn_encoder.pkl", "rb") as f:
                 turn_encoder = pickle.load(f)
             logger.info("Тёрн-модель загружена")
-        else:
-            logger.warning("turn_model.pkl не найден")
         if os.path.exists("river_model.pkl"):
             with open("river_model.pkl", "rb") as f:
                 river_model = pickle.load(f)
             with open("river_encoder.pkl", "rb") as f:
                 river_encoder = pickle.load(f)
             logger.info("Ривер-модель загружена")
-        else:
-            logger.warning("river_model.pkl не найден")
     except Exception as e:
         logger.error(f"Ошибка загрузки постфлоп-моделей: {e}")
 
@@ -162,10 +156,6 @@ def hand_features(cards_str):
             'gap':gap, 'hand_group':group}
 
 def parse_hand_advanced(content):
-    """
-    Расширенный парсер, извлекающий префлоп и постфлоп действия Hero.
-    Поддерживает как ***, так и * (GG Poker) с пробелами.
-    """
     result = {
         'hero_seat': None,
         'hero_position': None,
@@ -208,38 +198,7 @@ def parse_hand_advanced(content):
     if stack_match and result['big_blind'] > 0:
         result['hero_stack_pre_bb'] = float(stack_match.group(1)) / result['big_blind']
     
-    # Гибкие маркеры: могут быть *** или * (GG Poker)
-    sections = {
-        'preflop': (r'\*\*\*?\s*HOLE CARDS\s*\*\*\*?', r'\*\*\*?\s*FLOP\s*\*\*\*?'),
-        'flop': (r'\*\*\*?\s*FLOP\s*\*\*\*?', r'\*\*\*?\s*TURN\s*\*\*\*?'),
-        'turn': (r'\*\*\*?\s*TURN\s*\*\*\*?', r'\*\*\*?\s*RIVER\s*\*\*\*?'),
-        'river': (r'\*\*\*?\s*RIVER\s*\*\*\*?', r'\*\*\*?\s*SHOW DOWN\s*\*\*\*?')
-    }
-    for street, (start_pattern, end_pattern) in sections.items():
-        start_match = re.search(start_pattern, content, re.IGNORECASE)
-        if not start_match:
-            continue
-        start = start_match.end()
-        if end_pattern:
-            end_match = re.search(end_pattern, content[start:], re.IGNORECASE)
-            end = start + end_match.start() if end_match else len(content)
-        else:
-            end = len(content)
-        block = content[start:end]
-        # Действие Hero
-        pattern = r'Hero:\s*(folds|checks|calls|bets|raises)(?:\s*(?:\$?[\d\.]+)?\s*(?:to\s*\$?[\d\.]+)?)?'
-        match = re.search(pattern, block, re.IGNORECASE)
-        if match:
-            action = match.group(1)
-            result[f'{street}_action'] = action
-        # Количество оппонентов
-        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', block))
-        players.discard('Hero')
-        result[f'{street}_opponents'] = len(players)
-    if result['flop_action'] in ['bets', 'raises']:
-        result['flop_cbet'] = 1
-    
-    # Извлечение карт стола (гибкий поиск)
+    # Извлечение карт стола (гибкий поиск для GG Poker и PokerStars)
     flop_match = re.search(r'\*\*\*?\s*FLOP\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
     if flop_match:
         result['flop_cards'] = flop_match.group(1)
@@ -249,6 +208,46 @@ def parse_hand_advanced(content):
     river_match = re.search(r'\*\*\*?\s*RIVER\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
     if river_match:
         result['river_cards'] = river_match.group(1)
+    
+    # Действия Hero по улицам с помощью блоков
+    preflop_block = re.search(r'(?:HOLE CARDS.*?)(?=\*\*\*?\s*FLOP|\Z)', content, re.DOTALL | re.IGNORECASE)
+    if preflop_block:
+        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', preflop_block.group(0), re.IGNORECASE)
+        if match:
+            result['preflop_action'] = match.group(1).lower()
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', preflop_block.group(0)))
+        players.discard('Hero')
+        result['preflop_opponents'] = len(players)
+    
+    flop_block = re.search(r'(?:FLOP.*?)(?=\*\*\*?\s*TURN|\Z)', content, re.DOTALL | re.IGNORECASE)
+    if flop_block:
+        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', flop_block.group(0), re.IGNORECASE)
+        if match:
+            result['flop_action'] = match.group(1).lower()
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', flop_block.group(0)))
+        players.discard('Hero')
+        result['flop_opponents'] = len(players)
+    
+    turn_block = re.search(r'(?:TURN.*?)(?=\*\*\*?\s*RIVER|\Z)', content, re.DOTALL | re.IGNORECASE)
+    if turn_block:
+        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', turn_block.group(0), re.IGNORECASE)
+        if match:
+            result['turn_action'] = match.group(1).lower()
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', turn_block.group(0)))
+        players.discard('Hero')
+        result['turn_opponents'] = len(players)
+    
+    river_block = re.search(r'(?:RIVER.*?)(?=\*\*\*?\s*SHOW DOWN|\Z)', content, re.DOTALL | re.IGNORECASE)
+    if river_block:
+        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', river_block.group(0), re.IGNORECASE)
+        if match:
+            result['river_action'] = match.group(1).lower()
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', river_block.group(0)))
+        players.discard('Hero')
+        result['river_opponents'] = len(players)
+    
+    if result['flop_action'] in ['bet', 'raise']:
+        result['flop_cbet'] = 1
     return result
 
 # ---------- Вспомогательная функция для постфлоп-предсказания ----------
