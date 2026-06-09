@@ -13,12 +13,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ---------- Токен из переменной окружения ----------
+# ---------- Токен и админ из переменных окружения ----------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
-    raise ValueError("Переменная окружения TELEGRAM_TOKEN не установлена")
+    raise ValueError("TELEGRAM_TOKEN not set")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 
-# ---------- Глобальные переменные модели ----------
+# ---------- Глобальные переменные ----------
 model = None
 encoder = None
 
@@ -40,7 +41,7 @@ def load_model_files():
 load_model_files()
 
 # ---------- База данных ----------
-DB_PATH = "feedback.db"  # будет создана в текущей папке (Render)
+DB_PATH = "feedback.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -153,115 +154,175 @@ def parse_hand_robust(content):
     result['num_opponents_preflop'] = len(players)
     return result
 
-# ---------- Команды бота ----------
+# ---------- Команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🃏 *Poker Oracle Bot*\n\n"
-        "Отправьте мне текстовый файл (.txt) с раздачей или просто вставьте текст.\n"
-        "Я предскажу действие Hero на префлопе.\n\n"
-        "Команды: /stats, /about, /profile, /analysis, /explain, /feedback, /terms",
+        "🃏 Пришлите .txt файл с раздачей или текст раздачи"
+        "Поддерживаются форматы: PokerStars, GG Poker,"
+        "PartyPoker"
+        "📌 *Команды:*\n"
+        "/stats — как пользоваться\n"
+        "/about — о боте\n"
+        "/profile — ваш профиль\n"
+        "/analysis — детальный разбор последней руки\n"
+        "/explain — объяснение последнего предсказания\n"
+        "/feedback — отзыв\n"
+        "/terms — условия\n"
+        "/reload — перезагрузить модель (только админ)",
         parse_mode='Markdown'
     )
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🎯 *Как пользоваться*\n\n"
-        "1. Отправьте раздачу (файл .txt или текст).\n"
-        "2. Получите предсказание (fold/call/raise/check).\n"
-        "3. Оцените точность кнопками ✅/❌.\n"
-        "4. Используйте /explain для понятного объяснения."
+        "🎯 *Как пользоваться ботом*\n\n"
+        "1️⃣ Скопируйте историю раздачи из покер-рума (PokerStars, GG Poker, PartyPoker).\n"
+        "2️⃣ Отправьте её боту как текстовый файл или просто вставьте в чат.\n"
+        "3️⃣ Бот найдёт вашу позицию, карты, стек и количество оппонентов.\n"
+        "4️⃣ Получите предсказание: 🤚 Fold, 📞 Call, 📈 Raise или ✅ Check.\n"
+        "5️⃣ Оцените точность кнопками ✅/❌ – это поможет улучшить модель.\n\n"
+        "✨ *Дополнительно:*\n"
+        "/analysis – подробный разбор последней руки\n"
+        "/explain – понятное объяснение, почему бот дал такой совет"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "🤖 *Poker Oracle Bot v2.0*\n\nМодель Random Forest, обучена на реальных раздачах. Поддерживает PokerStars, GG Poker, PartyPoker."
+    text = (
+        "🤖 *Poker Oracle Bot v2.0*\n\n"
+        "🧠 *Модель:* Random Forest, обучена на реальных раздачах.\n"
+        "📊 *Признаки:* позиция, сила руки, стек в BB, количество оппонентов.\n"
+        "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
+        "📈 *Функции:* предсказание действий, сбор обратной связи, дообучение, объяснение решений.\n\n"
+        "© 2026 | Сделано с любовью к покеру и AI"
+    )
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    preds = context.user_data.get('predictions', 0)
-    last = context.user_data.get('last_hand_info', {})
-    last_action = last.get('action', 'нет').upper()
-    await update.message.reply_text(f"🆔 Ваш ID: {update.effective_user.id}\n📊 Предсказаний: {preds}\n🎯 Последнее действие: {last_action}")
+    user = update.effective_user
+    predictions = context.user_data.get('predictions', 0)
+    last = context.user_data.get('last_hand_info')
+    last_action = last['action'].upper() if last else 'нет'
+    text = f"🆔 *Ваш профиль*\n• Имя: {user.first_name}\n• ID: {user.id}\n\n📊 *Статистика*\n• Предсказаний: {predictions}\n• Последнее действие: {last_action}"
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    info = context.user_data.get('last_hand_info')
-    if not info:
-        await update.message.reply_text("Нет данных. Сначала отправьте раздачу.")
+    last = context.user_data.get('last_hand_info')
+    if not last:
+        await update.message.reply_text("❌ Нет данных о последней руке. Сначала отправьте раздачу.")
         return
     text = (
-        f"🔍 *Детальный разбор*\n\n"
-        f"🃏 Карты: {info['cards']}\n"
-        f"📌 Позиция: {info['position']}\n"
-        f"💰 Стек в BB: {info['stack_bb']:.1f}\n"
-        f"👥 Оппонентов: {info['opponents']}\n"
-        f"🤖 Предсказание: **{info['action'].upper()}** (уверенность {info['confidence']:.1%})"
+        f"🔍 *Детальный разбор последней руки*\n\n"
+        f"🃏 *Карты:* {last['cards']}\n"
+        f"📌 *Позиция:* {last['position']}\n"
+        f"💰 *Стек в BB:* {last['stack_bb']:.1f}\n"
+        f"👥 *Оппонентов:* {last['opponents']}\n\n"
+        f"📊 *Признаки:*\n"
+        f"• Пара: {'да' if last['is_pair'] else 'нет'}\n"
+        f"• Одномастные: {'да' if last['suited'] else 'нет'}\n"
+        f"• Старшая карта: {last['high_card']}\n"
+        f"• Младшая карта: {last['low_card']}\n"
+        f"• Разрыв (gap): {last['gap']}\n"
+        f"• Группа руки: {last['hand_group']}\n\n"
+        f"🤖 *Предсказание:* **{last['action'].upper()}** (уверенность {last['confidence']:.1%})"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     info = context.user_data.get('last_hand_info')
     if not info:
-        await update.message.reply_text("Нет данных для объяснения. Сначала отправьте раздачу.")
+        await update.message.reply_text("❌ Нет данных для объяснения. Сначала отправьте раздачу.")
         return
+    action = info['action'].upper()
+    confidence = info['confidence']
+    cards = info['cards']
+    position = info['position']
+    opponents = info['opponents']
+    stack = info['stack_bb']
+    is_pair = info['is_pair']
+    suited = info['suited']
+    high = info['high_card']
+    low = info['low_card']
+
     reasons = []
-    if info['is_pair']:
-        reasons.append(f"🔹 Карманная пара {info['high_card']}{info['high_card']} – {'сильная' if info['high_card'] in 'AKQJT' else 'средняя/слабая'}")
+    if is_pair:
+        if high in ['A','K','Q','J','T']:
+            reasons.append(f"🔹 Сильная карманная пара ({high}{high})")
+        else:
+            reasons.append(f"🔹 Слабая пара ({high}{high})")
     else:
-        suited_str = "одномастные" if info['suited'] else "разномастные"
-        reasons.append(f"🔹 {info['high_card']}{info['low_card']} {suited_str} – {'хорошая' if info['suited'] and info['high_rank']>=12 else 'слабая'}")
-    pos_desc = {"EP":"ранняя позиция (EP) – рискованно", "MP1/MP2/MP3":"средняя позиция", "CO/BTN/SB/BB":"поздняя позиция – преимущество"}
-    reasons.append(f"🔹 Позиция {info['position']} – {pos_desc.get(info['position'], 'средняя')}")
-    if info['opponents'] >= 4:
-        reasons.append(f"🔹 Много оппонентов ({info['opponents']}) – нужна сильная рука")
-    if info['stack_bb'] < 20:
-        reasons.append(f"🔹 Короткий стек ({info['stack_bb']:.0f} BB)")
+        if suited and high in ['A','K','Q','J']:
+            reasons.append(f"🔹 Хорошая одномастная рука ({high}{low} одномастные)")
+        else:
+            reasons.append(f"🔹 Слабая рука ({high}{low}, не пара, не одномастные)")
+    if position in ['EP','MP1','MP2']:
+        reasons.append(f"🔹 Ранняя позиция ({position}) – рискованно")
+    elif position in ['MP3','CO']:
+        reasons.append(f"🔹 Средняя позиция ({position})")
+    else:
+        reasons.append(f"🔹 Поздняя позиция ({position}) – преимущество")
+    if opponents >= 4:
+        reasons.append(f"🔹 Много оппонентов ({opponents}) – нужна сильная рука")
+    if stack < 20:
+        reasons.append(f"🔹 Короткий стек ({stack:.0f} BB) – либо оллин, либо фолд")
     conclusion = {
-        'fold': "🎯 Модель советует **СБРОСИТЬ**",
-        'call': "🎯 Модель советует **УРАВНЯТЬ**",
-        'raise': "🎯 Модель советует **ПОВЫСИТЬ**",
-        'check': "🎯 Модель советует **ЧЕКНУТЬ**"
-    }.get(info['action'], "")
-    text = f"🔍 *Объяснение:* {info['action'].upper()} (уверенность {info['confidence']:.0%})\n\n" + "\n".join(reasons) + f"\n\n{conclusion}"
+        'FOLD': '🎯 Модель советует **СБРОСИТЬ**',
+        'CALL': '🎯 Модель советует **УРАВНЯТЬ**',
+        'RAISE': '🎯 Модель советует **ПОВЫСИТЬ**',
+        'CHECK': '🎯 Модель советует **ЧЕКНУТЬ**'
+    }.get(action, '')
+    text = f"🔍 *Объяснение:* {action} (уверенность {confidence:.0%})\n\n"
+    text += "\n".join(reasons)
+    text += f"\n\n{conclusion}"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Напишите ваш отзыв или предложение. Администратор получит.")
+    await update.message.reply_text("📝 Напишите ваш отзыв или пожелание. Администратор получит его.")
 
 async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "⚖️ Условия: предсказания носят развлекательный характер. Используя бота, вы соглашаетесь."
-    await update.message.reply_text(text)
+    text = (
+        "⚖️ *Условия использования*\n\n"
+        "1️⃣ Предсказания носят развлекательный характер и не гарантируют выигрыш.\n"
+        "2️⃣ Бот не сохраняет тексты раздач дольше, чем необходимо для сбора обратной связи.\n"
+        "3️⃣ Ваши оценки (✅/❌) анонимно используются для дообучения модели.\n\n"
+        "✅ Продолжая использовать бота, вы соглашаетесь с этими условиями."
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def reload_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ADMIN_ID = int(os.environ.get("1246001390", 0))  # задайте в Render переменную ADMIN_ID
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Доступ запрещён.")
+        await update.message.reply_text("⛔ Доступ запрещён.")
         return
     if load_model_files():
-        await update.message.reply_text("Модель перезагружена")
+        await update.message.reply_text("✅ Модель перезагружена из файлов.")
+        logger.info("Модель перезагружена админом")
     else:
-        await update.message.reply_text("Ошибка перезагрузки")
+        await update.message.reply_text("❌ Ошибка перезагрузки модели.")
 
-# ---------- Обработчики ----------
+# ---------- Обработка предсказаний ----------
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if model is None:
-        await update.message.reply_text("Модель не загружена")
+        await update.message.reply_text("❌ Модель не загружена.")
         return
     doc = update.message.document
     if not doc.file_name.endswith('.txt'):
-        await update.message.reply_text("Требуется .txt файл")
+        await update.message.reply_text("Пожалуйста, отправьте файл .txt")
         return
     file = await doc.get_file()
     content_bytes = await file.download_as_bytearray()
-    try:
-        text = content_bytes.decode('utf-8')
-    except:
-        await update.message.reply_text("Ошибка декодирования")
+    for enc in ['utf-8', 'cp1251', 'latin1']:
+        try:
+            text = content_bytes.decode(enc)
+            break
+        except:
+            continue
+    else:
+        await update.message.reply_text("Не удалось прочитать файл.")
         return
     await predict(update, text, context)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if model is None:
-        await update.message.reply_text("Модель не загружена")
+        await update.message.reply_text("❌ Модель не загружена.")
         return
     text = update.message.text
     if text.startswith('/'):
@@ -269,13 +330,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await predict(update, text, context)
 
 async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE):
+    # Извлекаем первую раздачу
     if 'Poker Hand #' in text:
-        m = re.search(r'(Poker Hand #.*?)(?=Poker Hand #|$)', text, re.DOTALL)
-        if m:
-            text = m.group(1)
+        first = re.search(r'(Poker Hand #.*?)(?=Poker Hand #|$)', text, re.DOTALL)
+        if first:
+            text = first.group(1)
     parsed = parse_hand_robust(text)
     if not parsed or not parsed['hero_hole_cards']:
-        await update.message.reply_text("Не удалось распознать раздачу.")
+        await update.message.reply_text("❌ Не удалось распознать раздачу. Убедитесь в формате.")
         return
     card_feats = hand_features(parsed['hero_hole_cards'])
     pos_num = POS_ORDER.get(parsed['hero_position'], 7)
@@ -290,14 +352,14 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
     probs = model.predict_proba(X)[0]
     confidence = np.max(probs)
     action = encoder.inverse_transform([pred_enc])[0]
-    emoji = {'fold':'🤚','call':'📞','raise':'📈','check':'✅'}
+    emoji = {'fold':'🤚', 'call':'📞', 'raise':'📈', 'check':'✅'}
     reply = f"🎯 *Предсказание:* {action.upper()} {emoji.get(action,'')} (уверенность {confidence:.1%})"
-    
-    pred_id = save_prediction(update.effective_user.id, text[:1000], features, action, None)
+
+    pred_id = save_prediction(update.effective_user.id, text[:1000], features, action)
     keyboard = [[InlineKeyboardButton("✅ Верно", callback_data=f"feedback_{pred_id}_yes"),
                  InlineKeyboardButton("❌ Неверно", callback_data=f"feedback_{pred_id}_no")]]
     await update.message.reply_text(reply, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-    
+
     high_char = rank_to_letter.get(card_feats['high_card_rank'], str(card_feats['high_card_rank']))
     low_char = rank_to_letter.get(card_feats['low_card_rank'], str(card_feats['low_card_rank']))
     context.user_data['last_hand_info'] = {
@@ -328,10 +390,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             feedback = 'yes' if parts[2] == 'yes' else 'no'
             update_feedback(pred_id, feedback)
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("Спасибо за оценку!")
+            await query.message.reply_text("🙏 Спасибо за обратную связь!")
 
+# ---------- Запуск ----------
 def main():
-    app = Application.builder().token("8941942869:AAFOgYdsBuFSKNxBGZOsrqg9S1-ki3SbMlg").build()
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("about", about))
@@ -347,5 +410,5 @@ def main():
     logger.info("Бот запущен")
     app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
