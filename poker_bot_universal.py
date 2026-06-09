@@ -175,18 +175,22 @@ def parse_hand_advanced(content):
         'river_opponents': 0,
         'river_cards': None,
     }
+    # Блайнды
     blinds = re.search(r'\$([\d\.]+)/\$([\d\.]+)', content)
     if blinds:
         result['big_blind'] = float(blinds.group(2))
+    # Hero seat
     hero_seat_match = re.search(r'Seat\s+(\d+):\s*Hero', content, re.IGNORECASE)
     if not hero_seat_match:
         return None
     hero_seat = int(hero_seat_match.group(1))
     result['hero_seat'] = hero_seat
+    # Button
     button_match = re.search(r'Seat\s+#?(\d+)\s+is the button', content, re.IGNORECASE)
     if button_match:
         button_seat = int(button_match.group(1))
         result['hero_position'] = determine_position(hero_seat, button_seat, 9)
+    # Hero hole cards
     cards_match = re.search(r'Hero\s+\[([2-9TJQKA][cdhs] [2-9TJQKA][cdhs])\]', content)
     if not cards_match:
         cards_match = re.search(r'Dealt to Hero\s+\[([2-9TJQKA][cdhs] [2-9TJQKA][cdhs])\]', content)
@@ -194,22 +198,29 @@ def parse_hand_advanced(content):
         result['hero_hole_cards'] = cards_match.group(1)
     else:
         return None
+    # Hero stack
     stack_match = re.search(r'Seat\s+%d:\s+Hero\s+\(\$([\d\.]+)' % hero_seat, content)
     if stack_match and result['big_blind'] > 0:
         result['hero_stack_pre_bb'] = float(stack_match.group(1)) / result['big_blind']
-    
-    # Извлечение карт стола (гибкий поиск для GG Poker и PokerStars)
-    flop_match = re.search(r'\*\*\*?\s*FLOP\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
+
+    # Извлечение карт стола
+    flop_match = re.search(r'FLOP.*?\[([^]]+)\]', content, re.IGNORECASE)
     if flop_match:
         result['flop_cards'] = flop_match.group(1)
-    turn_match = re.search(r'\*\*\*?\s*TURN\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
+    turn_match = re.search(r'TURN.*?\[([^]]+)\](?:.*?\[([^]]+)\])?', content, re.IGNORECASE)
     if turn_match:
-        result['turn_cards'] = turn_match.group(1)
-    river_match = re.search(r'\*\*\*?\s*RIVER\s*\*\*\*?\s*\[([^]]+)\]', content, re.IGNORECASE)
+        if turn_match.group(2):
+            result['turn_cards'] = turn_match.group(2)
+        else:
+            result['turn_cards'] = turn_match.group(1)
+    river_match = re.search(r'RIVER.*?\[([^]]+)\](?:.*?\[([^]]+)\])?', content, re.IGNORECASE)
     if river_match:
-        result['river_cards'] = river_match.group(1)
-    
-    # Действия Hero по улицам с помощью блоков
+        if river_match.group(2):
+            result['river_cards'] = river_match.group(2)
+        else:
+            result['river_cards'] = river_match.group(1)
+
+    # Действия Hero по улицам (простой поиск по блокам)
     preflop_block = re.search(r'(?:HOLE CARDS.*?)(?=\*\*\*?\s*FLOP|\Z)', content, re.DOTALL | re.IGNORECASE)
     if preflop_block:
         match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', preflop_block.group(0), re.IGNORECASE)
@@ -218,7 +229,7 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', preflop_block.group(0)))
         players.discard('Hero')
         result['preflop_opponents'] = len(players)
-    
+
     flop_block = re.search(r'(?:FLOP.*?)(?=\*\*\*?\s*TURN|\Z)', content, re.DOTALL | re.IGNORECASE)
     if flop_block:
         match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', flop_block.group(0), re.IGNORECASE)
@@ -227,7 +238,7 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', flop_block.group(0)))
         players.discard('Hero')
         result['flop_opponents'] = len(players)
-    
+
     turn_block = re.search(r'(?:TURN.*?)(?=\*\*\*?\s*RIVER|\Z)', content, re.DOTALL | re.IGNORECASE)
     if turn_block:
         match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', turn_block.group(0), re.IGNORECASE)
@@ -236,7 +247,7 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', turn_block.group(0)))
         players.discard('Hero')
         result['turn_opponents'] = len(players)
-    
+
     river_block = re.search(r'(?:RIVER.*?)(?=\*\*\*?\s*SHOW DOWN|\Z)', content, re.DOTALL | re.IGNORECASE)
     if river_block:
         match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', river_block.group(0), re.IGNORECASE)
@@ -245,8 +256,8 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', river_block.group(0)))
         players.discard('Hero')
         result['river_opponents'] = len(players)
-    
-    if result['flop_action'] in ['bet', 'raise']:
+
+    if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
     return result
 
@@ -457,7 +468,10 @@ async def postflop_command(update: Update, context: ContextTypes.DEFAULT_TYPE, s
         return
     cards = parsed.get(f'{street}_cards')
     action = parsed.get(f'{street}_action')
-    cards_text = f"🃏 Карты {street.upper()}: {cards}" if cards else f"⚠️ Карты {street.upper()} не найдены в раздаче."
+    if cards:
+        cards_text = f"🃏 Карты {street.upper()}: {cards}"
+    else:
+        cards_text = f"⚠️ Карты {street.upper()} не найдены в раздаче."
     if action:
         await update.message.reply_text(f"{cards_text}\nℹ️ В этой раздаче на {street.upper()} вы уже совершили действие: {action.upper()}.")
         return
