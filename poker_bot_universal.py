@@ -412,11 +412,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith('/'):
         return
     
-    # Проверка: ждём ли отзыв от пользователя?
+    # Режим ожидания отзыва
     if context.user_data.get('awaiting_feedback'):
         context.user_data['awaiting_feedback'] = False
         user = update.effective_user
         feedback_text = f"📝 *Новый отзыв*\nОт: @{user.username or user.first_name} (ID: {user.id})\n\n{text}"
+        if ADMIN_ID == 0:
+            await update.message.reply_text("❌ Администратор не настроен. Отзыв не может быть отправлен.")
+            return
         try:
             await context.bot.send_message(chat_id=ADMIN_ID, text=feedback_text, parse_mode='Markdown')
             await update.message.reply_text("🙏 Спасибо за ваш отзыв! Он передан администратору.")
@@ -425,11 +428,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось отправить отзыв. Попробуйте позже.")
         return
     
-    # Если не режим отзыва — обрабатываем как раздачу
+    # Обычная обработка раздачи
     await predict(update, text, context)
-    if ADMIN_ID == 0:
-    await update.message.reply_text("❌ Администратор не настроен. Отзыв не может быть отправлен.")
-    return
     
 async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE):
     # Извлекаем первую раздачу
