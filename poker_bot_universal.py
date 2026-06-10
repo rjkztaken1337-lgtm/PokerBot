@@ -280,24 +280,19 @@ def parse_hand_advanced(content):
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
 
-    # ---------- Шоудаун и итог (максимально гибкий поиск) ----------
+    # ---------- Шоудаун и итог (исправлено для захвата ранга) ----------
     # Поиск Hero в шоудауне
-    hero_show = re.search(r'Hero[:\s]+shows?ed?[:\s]*\[([^]]+)\][:\s]*\((.*?)\)', content, re.IGNORECASE)
-    if not hero_show:
-        hero_show = re.search(r'Hero\s+shows\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
-    if not hero_show:
-        hero_show = re.search(r'Hero[:\s]+shows?ed?[:\s]*\[([^]]+)\]', content, re.IGNORECASE)
+    hero_show = re.search(r'Hero[:\s]+shows?ed?[:\s]*\[([^]]+)\]', content, re.IGNORECASE)
     if hero_show:
         result['showdown_hero_hand'] = hero_show.group(1).strip()
-        if len(hero_show.groups()) > 1:
-            result['showdown_hero_rank'] = hero_show.group(2).strip()
+        # Ищем ранг в скобках после карт
+        rank_match = re.search(r'\(([^)]+)\)', content[hero_show.end():])
+        if rank_match:
+            result['showdown_hero_rank'] = rank_match.group(1).strip()
         else:
             result['showdown_hero_rank'] = "unknown"
-    
-    # Поиск оппонента в шоудауне
+    # Поиск оппонента
     villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+shows?ed?\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
-    if not villain_show:
-        villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+shows\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
     if villain_show:
         result['showdown_villain_hand'] = villain_show.group(1).strip()
         result['showdown_villain_rank'] = villain_show.group(2).strip()
@@ -605,7 +600,6 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += "🎉 *Победа без вскрытия* (оппонент сфолдил)\n"
     elif parsed.get('hero_won') is False:
         text += "❌ *Поражение Hero*\n"
-        # Если есть информация о руке Hero или оппонента, показываем её
         if parsed.get('showdown_hero_rank') or parsed.get('showdown_villain_rank'):
             if parsed.get('showdown_hero_rank'):
                 text += f"🃏 *Ваша рука:* {parsed['showdown_hero_hand']} – {parsed['showdown_hero_rank']}\n"
