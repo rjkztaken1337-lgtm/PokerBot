@@ -280,17 +280,18 @@ def parse_hand_advanced(content):
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
 
-    hero_show = re.search(r'Hero: shows \[([^]]+)\] \((.*?)\)', content)
+    # Шоудаун и итог
+    hero_show = re.search(r'Hero: shows?ed? \[([^]]+)\] \((.*?)\)', content)
     if hero_show:
         result['showdown_hero_hand'] = hero_show.group(1)
         result['showdown_hero_rank'] = hero_show.group(2)
-    villain_show = re.search(r'Seat \d+: [A-Za-z0-9_]+ shows \[([^]]+)\] \((.*?)\)', content)
+    villain_show = re.search(r'Seat \d+: [A-Za-z0-9_]+ shows?ed? \[([^]]+)\] \((.*?)\)', content)
     if villain_show:
         result['showdown_villain_hand'] = villain_show.group(1)
         result['showdown_villain_rank'] = villain_show.group(2)
     hero_won_match = re.search(r'Hero (?:collected|won) \$([\d\.]+)', content)
     if not hero_won_match:
-        hero_won_match = re.search(r'Seat %d: Hero .* won \$([\d\.]+)' % hero_seat, content)
+        hero_won_match = re.search(r'Seat %d: Hero .* (?:won|collected) \$([\d\.]+)' % hero_seat, content)
     if hero_won_match:
         result['hero_won'] = True
         result['hero_win_amount'] = float(hero_won_match.group(1))
