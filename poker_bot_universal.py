@@ -280,12 +280,15 @@ def parse_hand_advanced(content):
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
 
-    # ---------- Шоудаун и итог (исправлено) ----------
-    hero_show = re.search(r'Hero:?\s+(?:shows|showed)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    # ---------- Шоудаун и итог ----------
+    hero_show = re.search(r'Hero\s*:\s*(?:shows?ed?)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    if not hero_show:
+        hero_show = re.search(r'Hero\s+(?:shows?ed?)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
     if hero_show:
         result['showdown_hero_hand'] = hero_show.group(1).strip()
         result['showdown_hero_rank'] = hero_show.group(2).strip()
-    villain_show = re.search(r'Seat \d+:\s+[A-Za-z0-9_]+\s+(?:shows|showed)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    # Поиск оппонента: Seat X: Nick shows ...
+    villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+(?:shows?ed?)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
     if villain_show:
         result['showdown_villain_hand'] = villain_show.group(1).strip()
         result['showdown_villain_rank'] = villain_show.group(2).strip()
@@ -598,6 +601,7 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if parsed.get('showdown_villain_rank'):
             text += f"🃏 *Рука оппонента:* {parsed['showdown_villain_hand']} – {parsed['showdown_villain_rank']}\n"
         else:
+            # Если нет шоудауна (т.е. нет информации о руках), значит Hero сфолдил до вскрытия
             text += "⚠️ *Поражение без вскрытия* (вероятно, Hero сфолдил)\n"
     else:
         text += "⚠️ *Результат:* Раздача завершена без участия Hero в шоудауне (вероятно, Hero сфолдил или выиграл без вскрытия).\n"
