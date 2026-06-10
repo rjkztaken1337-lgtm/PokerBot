@@ -230,7 +230,7 @@ def parse_hand_advanced(content):
             result['river_cards'] = river_match.group(2)
         else:
             result['river_cards'] = river_match.group(1)
-    # Все карты стола (Board)
+    # Все карты стола
     board_cards = []
     if result['flop_cards']:
         board_cards.extend(result['flop_cards'].split())
@@ -539,12 +539,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v3.3* (исправлен расчёт банка и добавлена доска в итог)\n\n"
+        "🤖 *Poker Oracle Bot v3.4* (оптимизирован расчёт банка, улучшен итог раздачи)\n\n"
         "🧠 *Модели:* Random Forest для префлопа, флопа, тёрна, ривера.\n"
         "📊 *Признаки:* позиция, сила руки, стек, оппоненты, предыдущие действия.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
         "📈 *Функции:* предсказание действий, сбор обратной связи, переобучение, объяснение решений, оценка действий пользователя.\n"
-        "🃏 *Новое:* точный расчёт банка на каждой улице, отображение всех пяти карт стола в итоге раздачи.\n\n"
+        "🃏 *Новое:* отображение всех пяти карт стола, результат внизу итога.\n\n"
         "© 2026 | Сделано с любовью к покеру и AI"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -640,22 +640,14 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += "\n🏆 *ИТОГ РАЗДАЧИ*\n"
     if parsed.get('board_cards'):
         text += f"🃏 *Доска:* {parsed['board_cards']}\n"
+    if parsed.get('showdown_hero_rank'):
+        text += f"🃏 *Ваша рука:* {parsed['showdown_hero_hand']} – {parsed['showdown_hero_rank']}\n"
+    if parsed.get('showdown_villain_rank'):
+        text += f"🃏 *Рука оппонента:* {parsed['showdown_villain_hand']} – {parsed['showdown_villain_rank']}\n"
     if parsed.get('hero_won') is True:
         text += f"✅ *Победа Hero!* Выигрыш: ${parsed.get('hero_win_amount', 0):.2f}\n"
-        if parsed.get('showdown_hero_rank'):
-            text += f"🃏 *Ваша рука:* {parsed['showdown_hero_hand']} – {parsed['showdown_hero_rank']}\n"
-        if parsed.get('showdown_villain_rank'):
-            text += f"🃏 *Рука оппонента:* {parsed['showdown_villain_hand']} – {parsed['showdown_villain_rank']}\n"
-        else:
-            text += "🎉 *Победа без вскрытия* (оппонент сфолдил)\n"
     elif parsed.get('hero_won') is False:
         text += "❌ *Поражение Hero*\n"
-        if parsed.get('showdown_hero_rank'):
-            text += f"🃏 *Ваша рука:* {parsed['showdown_hero_hand']} – {parsed['showdown_hero_rank']}\n"
-        if parsed.get('showdown_villain_rank'):
-            text += f"🃏 *Рука оппонента:* {parsed['showdown_villain_hand']} – {parsed['showdown_villain_rank']}\n"
-        else:
-            text += "⚠️ *Поражение без вскрытия* (вероятно, Hero сфолдил)\n"
     else:
         text += "⚠️ *Результат:* Раздача завершена без участия Hero в шоудауне (вероятно, Hero сфолдил или выиграл без вскрытия).\n"
     await update.message.reply_text(text, parse_mode='Markdown')
