@@ -215,18 +215,31 @@ def parse_hand_advanced(content):
     if stack_match and result['big_blind'] > 0:
         result['hero_stack_pre_bb'] = float(stack_match.group(1)) / result['big_blind']
 
-    # Карты стола
-    flop_match = re.search(r'\*\*\*\s*FLOP\s*\*\*\*\s*\[([^\]]+)\]', content, re.IGNORECASE)
+    # Карты стола — работает с *** FLOP *** (GG/Party) и просто FLOP (PokerStars)
+    flop_match = re.search(r'(?:\*+\s*)?FLOP(?:\s*\*+)?\s*\[([^\]]+)\]', content, re.IGNORECASE)
     if flop_match:
         result['flop_cards'] = flop_match.group(1).strip()
 
-    turn_match = re.search(r'\*\*\*\s*TURN\s*\*\*\*\s*\[[^\]]+\]\s*\[([^\]]+)\]', content, re.IGNORECASE)
+    # Тёрн: ищем второй блок скобок на строке с TURN [flop_cards] [turn_card]
+    turn_match = re.search(r'(?:\*+\s*)?TURN(?:\s*\*+)?\s*\[[^\]]+\]\s*\[([^\]]+)\]', content, re.IGNORECASE)
     if turn_match:
         result['turn_cards'] = turn_match.group(1).strip()
+    else:
+        # fallback: строка "TURN [2s]" без предыдущих карт
+        turn_match2 = re.search(r'(?:\*+\s*)?TURN(?:\s*\*+)?\s*\[([^\]]+)\]', content, re.IGNORECASE)
+        if turn_match2:
+            cards = turn_match2.group(1).strip().split()
+            result['turn_cards'] = cards[-1] if cards else None
 
-    river_match = re.search(r'\*\*\*\s*RIVER\s*\*\*\*\s*\[[^\]]+\]\s*\[([^\]]+)\]', content, re.IGNORECASE)
+    # Ривер: аналогично
+    river_match = re.search(r'(?:\*+\s*)?RIVER(?:\s*\*+)?\s*\[[^\]]+\]\s*\[([^\]]+)\]', content, re.IGNORECASE)
     if river_match:
         result['river_cards'] = river_match.group(1).strip()
+    else:
+        river_match2 = re.search(r'(?:\*+\s*)?RIVER(?:\s*\*+)?\s*\[([^\]]+)\]', content, re.IGNORECASE)
+        if river_match2:
+            cards = river_match2.group(1).strip().split()
+            result['river_cards'] = cards[-1] if cards else None
 
     # Полная доска для анализа
     board_cards = []
@@ -277,20 +290,26 @@ def parse_hand_advanced(content):
                 last_bet = float(m.group(1))
         return last_bet
 
-    # Разбивка на блоки
-    pre_block = re.search(r'(?:HOLE CARDS.*?)(?=\*\*\*?\s*FLOP|\Z)', content, re.DOTALL | re.IGNORECASE)
+    # Разбивка на блоки — работает с *** и без ***
+    pre_block = re.search(r'(?:HOLE CARDS.*?)(?=(?:\*+\s*)?FLOP|\Z)', content, re.DOTALL | re.IGNORECASE)
     pre_text = pre_block.group(0) if pre_block else ""
-    flop_block = re.search(r'(?:\*\*\*\s*FLOP.*?)(?=\*\*\*?\s*TURN|\Z)', content, re.DOTALL | re.IGNORECASE)
+    flop_block = re.search(r'(?:(?:\*+\s*)?FLOP.*?)(?=(?:\*+\s*)?TURN|\Z)', content, re.DOTALL | re.IGNORECASE)
     flop_text = flop_block.group(0) if flop_block else ""
-    turn_block = re.search(r'(?:\*\*\*\s*TURN.*?)(?=\*\*\*?\s*RIVER|\Z)', content, re.DOTALL | re.IGNORECASE)
+    turn_block = re.search(r'(?:(?:\*+\s*)?TURN.*?)(?=(?:\*+\s*)?RIVER|\Z)', content, re.DOTALL | re.IGNORECASE)
     turn_text = turn_block.group(0) if turn_block else ""
-    river_block = re.search(r'(?:\*\*\*\s*RIVER.*?)(?=\*\*\*?\s*SHOW DOWN|\Z)', content, re.DOTALL | re.IGNORECASE)
+    river_block = re.search(r'(?:(?:\*+\s*)?RIVER.*?)(?=(?:\*+\s*)?SHOW DOWN|\Z)', content, re.DOTALL | re.IGNORECASE)
     river_text = river_block.group(0) if river_block else ""
 
     # Расчёт банка (накопительно по улицам)
     pot = 0.0
 
-    # Префлоп
+    # Анте и блайнды — идут ДО блока HOLE CARDS, считаем отдельно
+    antes_block = re.search(r'^(.*?)(?=\*+\s*HOLE CARDS)', content, re.DOTALL | re.IGNORECASE)
+    if antes_block:
+        for line in antes_block.group(1).split('\n'):
+            pot += get_bet_amount(line)
+
+    # Префлоп (действия после HOLE CARDS: коллы, рейзы)
     for line in pre_text.split('\n'):
         pot += get_bet_amount(line)
 
