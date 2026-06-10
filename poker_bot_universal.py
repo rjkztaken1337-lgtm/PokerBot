@@ -280,14 +280,12 @@ def parse_hand_advanced(content):
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
 
-    # ---------- Шоудаун и итог ----------
-    hero_show = re.search(r'Hero:?\s+shows?ed?\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
-    if not hero_show:
-        hero_show = re.search(r'Hero shows \[([^]]+)\] \((.*?)\)', content, re.IGNORECASE)
+    # ---------- Шоудаун и итог (исправлено) ----------
+    hero_show = re.search(r'Hero:?\s+(?:shows|showed)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
     if hero_show:
         result['showdown_hero_hand'] = hero_show.group(1).strip()
         result['showdown_hero_rank'] = hero_show.group(2).strip()
-    villain_show = re.search(r'Seat \d+:\s+[A-Za-z0-9_]+\s+shows?ed?\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    villain_show = re.search(r'Seat \d+:\s+[A-Za-z0-9_]+\s+(?:shows|showed)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
     if villain_show:
         result['showdown_villain_hand'] = villain_show.group(1).strip()
         result['showdown_villain_rank'] = villain_show.group(2).strip()
@@ -300,7 +298,6 @@ def parse_hand_advanced(content):
         result['hero_won'] = True
         result['hero_win_amount'] = float(hero_won_match.group(1))
     else:
-        # Проверяем, проиграл ли Hero
         if re.search(r'Hero\s+lost', content, re.IGNORECASE) or re.search(r'Seat\s+%d:\s+Hero\s+.*?\s+lost' % hero_seat, content, re.IGNORECASE):
             result['hero_won'] = False
         else:
