@@ -182,6 +182,7 @@ def parse_hand_advanced(content):
         'river_cards': None,
         'river_pot': 0.0,
         'river_bet': 0.0,
+        'board_cards': None,
         'showdown_hero_hand': None,
         'showdown_hero_rank': None,
         'showdown_villain_hand': None,
@@ -229,8 +230,17 @@ def parse_hand_advanced(content):
             result['river_cards'] = river_match.group(2)
         else:
             result['river_cards'] = river_match.group(1)
+    # Все карты стола (Board)
+    board_cards = []
+    if result['flop_cards']:
+        board_cards.extend(result['flop_cards'].split())
+    if result['turn_cards']:
+        board_cards.append(result['turn_cards'])
+    if result['river_cards']:
+        board_cards.append(result['river_cards'])
+    result['board_cards'] = " ".join(board_cards) if board_cards else None
 
-    # Функция для извлечения суммы из одной строки действия
+    # Функция для извлечения суммы из строки действия (с учётом рейзов как разницы)
     def get_amount(line):
         # posts small blind $0.01
         m = re.search(r'posts (?:small blind|big blind|ante)\s+\$([\d\.]+)', line, re.IGNORECASE)
@@ -245,12 +255,14 @@ def parse_hand_advanced(content):
         if m:
             return float(m.group(1))
         # raises $0.23 to $0.34
-        m = re.search(r'raises\s+\$[\d\.]+\s+to\s+\$([\d\.]+)', line, re.IGNORECASE)
+        m = re.search(r'raises\s+\$([\d\.]+)\s+to\s+\$([\d\.]+)', line, re.IGNORECASE)
         if m:
-            return float(m.group(1))
-        # raises $0.23 (without "to")
+            # Добавляем только разницу (то, что фактически добавилось в банк)
+            return float(m.group(2)) - float(m.group(1))
+        # raises $0.23 (без "to")
         m = re.search(r'raises\s+\$([\d\.]+)', line, re.IGNORECASE)
         if m:
+            # Это может быть рейз без указания предыдущей ставки – добавляем всю сумму
             return float(m.group(1))
         return 0.0
 
@@ -527,12 +539,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v3.2* (исправлен расчёт банка и шоудаун)\n\n"
+        "🤖 *Poker Oracle Bot v3.3* (исправлен расчёт банка и добавлена доска в итог)\n\n"
         "🧠 *Модели:* Random Forest для префлопа, флопа, тёрна, ривера.\n"
         "📊 *Признаки:* позиция, сила руки, стек, оппоненты, предыдущие действия.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
         "📈 *Функции:* предсказание действий, сбор обратной связи, переобучение, объяснение решений, оценка действий пользователя.\n"
-        "🃏 *Новое:* точный расчёт банка на каждой улице путём суммирования только реальных ставок, шоудаун показывает руки оппонента.\n\n"
+        "🃏 *Новое:* точный расчёт банка на каждой улице, отображение всех пяти карт стола в итоге раздачи.\n\n"
         "© 2026 | Сделано с любовью к покеру и AI"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -626,6 +638,8 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"\n   ⚠️ *Оценка:* Модель рекомендовала {river_pred.upper()} (уверенность {river_conf:.1%}), а вы сделали {last['river_action'].upper()}."
 
     text += "\n🏆 *ИТОГ РАЗДАЧИ*\n"
+    if parsed.get('board_cards'):
+        text += f"🃏 *Доска:* {parsed['board_cards']}\n"
     if parsed.get('hero_won') is True:
         text += f"✅ *Победа Hero!* Выигрыш: ${parsed.get('hero_win_amount', 0):.2f}\n"
         if parsed.get('showdown_hero_rank'):
