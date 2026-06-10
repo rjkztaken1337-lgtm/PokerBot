@@ -114,7 +114,7 @@ def update_feedback(pred_id, feedback):
 
 init_db()
 
-# ---------- Константы и парсер ----------
+# ---------- Константы ----------
 RANK_ORDER = {'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14}
 RANK_TO_CHAR = {2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'T',11:'J',12:'Q',13:'K',14:'A'}
 POS_ORDER = {'BTN':0,'SB':1,'BB':2,'CO':3,'MP3':4,'MP2':5,'MP1':6,'EP':7}
@@ -156,6 +156,7 @@ def hand_features(cards_str):
     return {'is_pair':is_pair, 'suited':suited, 'high_card_rank':high, 'low_card_rank':low,
             'gap':gap, 'hand_group':group}
 
+# ---------- Новый парсер с расчётом банка ----------
 def parse_hand_advanced(content):
     result = {
         'hero_seat': None,
@@ -165,7 +166,6 @@ def parse_hand_advanced(content):
         'hero_stack_pre_bb': 0.0,
         'preflop_action': None,
         'preflop_opponents': 0,
-        'preflop_pot': 0.0,
         'flop_action': None,
         'flop_opponents': 0,
         'flop_cbet': 0,
@@ -189,6 +189,7 @@ def parse_hand_advanced(content):
         'hero_won': None,
         'hero_win_amount': 0.0,
     }
+    # Базовые данные
     blinds = re.search(r'\$([\d\.]+)/\$([\d\.]+)', content)
     if blinds:
         result['big_blind'] = float(blinds.group(2))
@@ -229,114 +230,114 @@ def parse_hand_advanced(content):
         else:
             result['river_cards'] = river_match.group(1)
 
-    # ----- Разбиение на улицы для суммирования банка -----
-    # Функция для извлечения всех ставок из блока
-    def sum_bets(block):
-        # Ищем все строки вида "Player: action $amount" или "Player: raises $x to $y"
-        # Суммируем все числа, которые идут после $ и перед словом (упрощённо)
-        amounts = re.findall(r'\$(\d+\.?\d*)', block)
-        total = sum(float(a) for a in amounts)
-        # Также учитываем анте (post ante $0.01)
-        ante_matches = re.findall(r'posts the ante \$(\d+\.?\d*)', block)
-        total += sum(float(a) for a in ante_matches)
-        return total
-
-    # Блок до флопа (включает HOLE CARDS и все действия до FLOP)
-    preflop_end = content.find('*** FLOP ***')
-    if preflop_end == -1:
-        preflop_end = len(content)
-    preflop_block = content[:preflop_end]
-    result['preflop_pot'] = sum_bets(preflop_block)
-
-    # Флоп блок (от FLOP до TURN)
-    flop_start = content.find('*** FLOP ***')
-    flop_end = content.find('*** TURN ***')
-    if flop_start != -1:
-        if flop_end == -1:
-            flop_end = len(content)
-        flop_block = content[flop_start:flop_end]
-        result['flop_pot'] = result['preflop_pot'] + sum_bets(flop_block)
-    else:
-        result['flop_pot'] = result['preflop_pot']
-
-    # Тёрн блок (от TURN до RIVER)
-    turn_start = content.find('*** TURN ***')
-    turn_end = content.find('*** RIVER ***')
-    if turn_start != -1:
-        if turn_end == -1:
-            turn_end = len(content)
-        turn_block = content[turn_start:turn_end]
-        result['turn_pot'] = result['flop_pot'] + sum_bets(turn_block)
-    else:
-        result['turn_pot'] = result['flop_pot']
-
-    # Ривер блок (от RIVER до SHOW DOWN)
-    river_start = content.find('*** RIVER ***')
-    river_end = content.find('*** SHOW DOWN ***')
-    if river_start != -1:
-        if river_end == -1:
-            river_end = len(content)
-        river_block = content[river_start:river_end]
-        result['river_pot'] = result['turn_pot'] + sum_bets(river_block)
-    else:
-        result['river_pot'] = result['turn_pot']
-
-    # Действия Hero и оппоненты для каждой улицы (прежние)
+    # ---- Сбор действий всех игроков и расчёт банка ----
+    # Разобьём текст на блоки по улицам
+    street_blocks = {}
+    # Префлоп: от "HOLE CARDS" до "FLOP"
     preflop_block = re.search(r'(?:HOLE CARDS.*?)(?=\*\*\*?\s*FLOP|\Z)', content, re.DOTALL | re.IGNORECASE)
     if preflop_block:
-        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', preflop_block.group(0), re.IGNORECASE)
-        if match:
-            result['preflop_action'] = match.group(1).lower()
-        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', preflop_block.group(0)))
-        players.discard('Hero')
-        result['preflop_opponents'] = len(players)
-
+        street_blocks['preflop'] = preflop_block.group(0)
+    # Флоп: от "FLOP" до "TURN"
     flop_block = re.search(r'(?:FLOP.*?)(?=\*\*\*?\s*TURN|\Z)', content, re.DOTALL | re.IGNORECASE)
     if flop_block:
-        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', flop_block.group(0), re.IGNORECASE)
-        if match:
-            result['flop_action'] = match.group(1).lower()
-        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', flop_block.group(0)))
-        players.discard('Hero')
-        result['flop_opponents'] = len(players)
-        bet_match = re.search(r'Hero:\s+bets \$([\d\.]+)', flop_block.group(0))
-        if bet_match:
-            result['flop_bet'] = float(bet_match.group(1))
-
+        street_blocks['flop'] = flop_block.group(0)
+    # Тёрн: от "TURN" до "RIVER"
     turn_block = re.search(r'(?:TURN.*?)(?=\*\*\*?\s*RIVER|\Z)', content, re.DOTALL | re.IGNORECASE)
     if turn_block:
-        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', turn_block.group(0), re.IGNORECASE)
-        if match:
-            result['turn_action'] = match.group(1).lower()
-        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', turn_block.group(0)))
-        players.discard('Hero')
-        result['turn_opponents'] = len(players)
-        bet_match = re.search(r'Hero:\s+bets \$([\d\.]+)', turn_block.group(0))
-        if bet_match:
-            result['turn_bet'] = float(bet_match.group(1))
-
+        street_blocks['turn'] = turn_block.group(0)
+    # Ривер: от "RIVER" до "SHOW DOWN"
     river_block = re.search(r'(?:RIVER.*?)(?=\*\*\*?\s*SHOW DOWN|\Z)', content, re.DOTALL | re.IGNORECASE)
     if river_block:
-        match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', river_block.group(0), re.IGNORECASE)
-        if match:
-            result['river_action'] = match.group(1).lower()
-        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', river_block.group(0)))
+        street_blocks['river'] = river_block.group(0)
+
+    # Функция для извлечения сумм ставок в блоке
+    def extract_bets(block_text):
+        # Ищем все строки вида "Player: action $amount" или "Player: raises $x to $y"
+        total = 0.0
+        # Ставки: "posts small blind $0.01", "posts big blind $0.02", "posts ante $0.01"
+        for match in re.finditer(r'posts (?:small blind|big blind|ante)\s+\$([\d\.]+)', block_text, re.IGNORECASE):
+            total += float(match.group(1))
+        for match in re.finditer(r'calls?\s+\$([\d\.]+)', block_text, re.IGNORECASE):
+            total += float(match.group(1))
+        for match in re.finditer(r'bets\s+\$([\d\.]+)', block_text, re.IGNORECASE):
+            total += float(match.group(1))
+        for match in re.finditer(r'raises\s+\$[\d\.]+\s+to\s+\$([\d\.]+)', block_text, re.IGNORECASE):
+            total += float(match.group(1))
+        # Также raise может быть в формате "raises $x"
+        for match in re.finditer(r'raises\s+\$([\d\.]+)', block_text, re.IGNORECASE):
+            total += float(match.group(1))
+        return total
+
+    # Накопленный банк (начальный – анте + блайнды)
+    running_pot = 0.0
+    # Анте и блайнды в префлоп-блоке
+    if 'preflop' in street_blocks:
+        running_pot += extract_bets(street_blocks['preflop'])
+    result['preflop_opponents'] = len(set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', content))) - 1
+    # Действие Hero на префлопе
+    pre_action = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', content, re.IGNORECASE)
+    if pre_action:
+        result['preflop_action'] = pre_action.group(1).lower()
+
+    # Флоп
+    if 'flop' in street_blocks:
+        flop_bets = extract_bets(street_blocks['flop'])
+        running_pot += flop_bets
+        result['flop_pot'] = running_pot
+        # Действие Hero на флопе
+        flop_action_match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', street_blocks['flop'], re.IGNORECASE)
+        if flop_action_match:
+            result['flop_action'] = flop_action_match.group(1).lower()
+        # Количество оппонентов на флопе
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', street_blocks['flop']))
+        players.discard('Hero')
+        result['flop_opponents'] = len(players)
+        # Ставка Hero на флопе
+        flop_bet_match = re.search(r'Hero:\s+bets\s+\$([\d\.]+)', street_blocks['flop'], re.IGNORECASE)
+        if flop_bet_match:
+            result['flop_bet'] = float(flop_bet_match.group(1))
+        if result['flop_action'] in ['bets', 'raises']:
+            result['flop_cbet'] = 1
+
+    # Тёрн
+    if 'turn' in street_blocks:
+        turn_bets = extract_bets(street_blocks['turn'])
+        running_pot += turn_bets
+        result['turn_pot'] = running_pot
+        turn_action_match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', street_blocks['turn'], re.IGNORECASE)
+        if turn_action_match:
+            result['turn_action'] = turn_action_match.group(1).lower()
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', street_blocks['turn']))
+        players.discard('Hero')
+        result['turn_opponents'] = len(players)
+        turn_bet_match = re.search(r'Hero:\s+bets\s+\$([\d\.]+)', street_blocks['turn'], re.IGNORECASE)
+        if turn_bet_match:
+            result['turn_bet'] = float(turn_bet_match.group(1))
+
+    # Ривер
+    if 'river' in street_blocks:
+        river_bets = extract_bets(street_blocks['river'])
+        running_pot += river_bets
+        result['river_pot'] = running_pot
+        river_action_match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', street_blocks['river'], re.IGNORECASE)
+        if river_action_match:
+            result['river_action'] = river_action_match.group(1).lower()
+        players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', street_blocks['river']))
         players.discard('Hero')
         result['river_opponents'] = len(players)
-        bet_match = re.search(r'Hero:\s+bets \$([\d\.]+)', river_block.group(0))
-        if bet_match:
-            result['river_bet'] = float(bet_match.group(1))
+        river_bet_match = re.search(r'Hero:\s+bets\s+\$([\d\.]+)', street_blocks['river'], re.IGNORECASE)
+        if river_bet_match:
+            result['river_bet'] = float(river_bet_match.group(1))
 
-    if result['flop_action'] in ['bets', 'raises']:
-        result['flop_cbet'] = 1
-
-    # ----- Шоудаун -----
+    # ---------- Шоудаун ----------
+    # Ищем Hero: shows [8h Jh] (a pair of Jacks) или Hero: shows [8h Jh] and lost with a pair of Jacks
     hero_show = re.search(r'Hero[:\s]+shows?ed?\s+\[([^]]+)\]\s*\(([^)]+)\)', content, re.IGNORECASE)
     if not hero_show:
         hero_show = re.search(r'Hero[:\s]+shows?ed?\s+\[([^]]+)\][:\s]+and (?:won|lost) with\s+(.+)', content, re.IGNORECASE)
     if hero_show:
         result['showdown_hero_hand'] = hero_show.group(1).strip()
         result['showdown_hero_rank'] = hero_show.group(2).strip()
+    # Оппонент: Seat 1: 1b7c8ce1 shows [Ad Qh] (a pair of Queens)
     villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+shows?ed?\s+\[([^]]+)\]\s*\(([^)]+)\)', content, re.IGNORECASE)
     if not villain_show:
         villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+shows?ed?\s+\[([^]]+)\][:\s]+and (?:won|lost) with\s+(.+)', content, re.IGNORECASE)
@@ -344,6 +345,7 @@ def parse_hand_advanced(content):
         result['showdown_villain_hand'] = villain_show.group(1).strip()
         result['showdown_villain_rank'] = villain_show.group(2).strip()
     
+    # Выигрыш Hero
     hero_won_match = re.search(r'Hero\s+collected\s+\$([\d\.]+)', content, re.IGNORECASE)
     if not hero_won_match:
         hero_won_match = re.search(r'Seat\s+%d:\s+Hero\s+.*?\s+won\s+\$([\d\.]+)' % hero_seat, content, re.IGNORECASE)
@@ -535,12 +537,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v3.0* (полное суммирование банка и исправленный анализ)\n\n"
+        "🤖 *Poker Oracle Bot v3.0* (точный расчёт банка через суммирование ставок, исправлен шоудаун)\n\n"
         "🧠 *Модели:* Random Forest для префлопа, флопа, тёрна, ривера.\n"
         "📊 *Признаки:* позиция, сила руки, стек, оппоненты, предыдущие действия.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
         "📈 *Функции:* предсказание действий, сбор обратной связи, переобучение, объяснение решений, оценка действий пользователя.\n"
-        "🃏 *Новое:* точный расчёт банка на каждой улице (суммирование всех ставок и анте).\n\n"
+        "🃏 *Новое:* точный расчёт банка на каждой улице путём суммирования ставок, шоудаун показывает руки оппонента.\n\n"
         "© 2026 | Сделано с любовью к покеру и AI"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -582,7 +584,6 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text += f"\n⚠️ *Префлоп:* Вы {user_preflop.upper()}, но модель рекомендовала {last['action'].upper()} (уверенность {last['confidence']:.1%}).\n"
 
-    # Флоп
     if last.get('flop_cards'):
         texture = analyze_board_texture(last['flop_cards'])
         text += f"\n♣️ *Флоп:* {last['flop_cards']}\n   *Текстура:* {texture}"
@@ -601,8 +602,6 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"\n   ✅ *Оценка:* Ваше действие совпадает с рекомендацией модели ({flop_pred.upper()}, уверенность {flop_conf:.1%})."
                 else:
                     text += f"\n   ⚠️ *Оценка:* Модель рекомендовала {flop_pred.upper()} (уверенность {flop_conf:.1%}), а вы сделали {last['flop_action'].upper()}."
-
-    # Тёрн
     if last.get('turn_cards'):
         texture = analyze_board_texture(last['turn_cards'])
         text += f"\n♦️ *Тёрн:* {last['turn_cards']}\n   *Текстура:* {texture}"
@@ -619,8 +618,6 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"\n   ✅ *Оценка:* Ваше действие совпадает с рекомендацией модели ({turn_pred.upper()}, уверенность {turn_conf:.1%})."
                 else:
                     text += f"\n   ⚠️ *Оценка:* Модель рекомендовала {turn_pred.upper()} (уверенность {turn_conf:.1%}), а вы сделали {last['turn_action'].upper()}."
-
-    # Ривер
     if last.get('river_cards'):
         texture = analyze_board_texture(last['river_cards'])
         text += f"\n♥️ *Ривер:* {last['river_cards']}\n   *Текстура:* {texture}"
