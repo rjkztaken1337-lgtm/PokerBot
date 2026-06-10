@@ -280,15 +280,24 @@ def parse_hand_advanced(content):
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
 
-    # ---------- Шоудаун и итог ----------
-    hero_show = re.search(r'Hero\s*:\s*(?:shows?ed?)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    # ---------- Шоудаун и итог (максимально гибкий поиск) ----------
+    # Поиск Hero в шоудауне
+    hero_show = re.search(r'Hero[:\s]+shows?ed?[:\s]*\[([^]]+)\][:\s]*\((.*?)\)', content, re.IGNORECASE)
     if not hero_show:
-        hero_show = re.search(r'Hero\s+(?:shows?ed?)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+        hero_show = re.search(r'Hero\s+shows\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    if not hero_show:
+        hero_show = re.search(r'Hero[:\s]+shows?ed?[:\s]*\[([^]]+)\]', content, re.IGNORECASE)
     if hero_show:
         result['showdown_hero_hand'] = hero_show.group(1).strip()
-        result['showdown_hero_rank'] = hero_show.group(2).strip()
-    # Поиск оппонента: Seat X: Nick shows ...
-    villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+(?:shows?ed?)\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+        if len(hero_show.groups()) > 1:
+            result['showdown_hero_rank'] = hero_show.group(2).strip()
+        else:
+            result['showdown_hero_rank'] = "unknown"
+    
+    # Поиск оппонента в шоудауне
+    villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+shows?ed?\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
+    if not villain_show:
+        villain_show = re.search(r'Seat\s+\d+:\s+[A-Za-z0-9_]+\s+shows\s+\[([^]]+)\]\s+\((.*?)\)', content, re.IGNORECASE)
     if villain_show:
         result['showdown_villain_hand'] = villain_show.group(1).strip()
         result['showdown_villain_rank'] = villain_show.group(2).strip()
@@ -487,7 +496,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v2.5* (с анализом дро, аутов, эквити и шансов банка)\n\n"
+        "🤖 *Poker Oracle Bot v2.6* (финальная версия с корректным отображением шоудауна)\n\n"
         "🧠 *Модели:* Random Forest для префлопа, флопа, тёрна, ривера.\n"
         "📊 *Признаки:* позиция, сила руки, стек, оппоненты, предыдущие действия.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
@@ -596,12 +605,13 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += "🎉 *Победа без вскрытия* (оппонент сфолдил)\n"
     elif parsed.get('hero_won') is False:
         text += "❌ *Поражение Hero*\n"
-        if parsed.get('showdown_hero_rank'):
-            text += f"🃏 *Ваша рука:* {parsed['showdown_hero_hand']} – {parsed['showdown_hero_rank']}\n"
-        if parsed.get('showdown_villain_rank'):
-            text += f"🃏 *Рука оппонента:* {parsed['showdown_villain_hand']} – {parsed['showdown_villain_rank']}\n"
+        # Если есть информация о руке Hero или оппонента, показываем её
+        if parsed.get('showdown_hero_rank') or parsed.get('showdown_villain_rank'):
+            if parsed.get('showdown_hero_rank'):
+                text += f"🃏 *Ваша рука:* {parsed['showdown_hero_hand']} – {parsed['showdown_hero_rank']}\n"
+            if parsed.get('showdown_villain_rank'):
+                text += f"🃏 *Рука оппонента:* {parsed['showdown_villain_hand']} – {parsed['showdown_villain_rank']}\n"
         else:
-            # Если нет шоудауна (т.е. нет информации о руках), значит Hero сфолдил до вскрытия
             text += "⚠️ *Поражение без вскрытия* (вероятно, Hero сфолдил)\n"
     else:
         text += "⚠️ *Результат:* Раздача завершена без участия Hero в шоудауне (вероятно, Hero сфолдил или выиграл без вскрытия).\n"
