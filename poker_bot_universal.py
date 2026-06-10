@@ -8,7 +8,6 @@ import subprocess
 import sys
 import numpy as np
 from datetime import datetime
-from collections import Counter
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 
@@ -117,9 +116,9 @@ init_db()
 
 # ---------- Константы и парсер ----------
 RANK_ORDER = {'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'T':10,'J':11,'Q':12,'K':13,'A':14}
-RANK_LETTER = {v:k for k,v in RANK_ORDER.items()}
+RANK_TO_CHAR = {2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'T',11:'J',12:'Q',13:'K',14:'A'}
 POS_ORDER = {'BTN':0,'SB':1,'BB':2,'CO':3,'MP3':4,'MP2':5,'MP1':6,'EP':7}
-SUITS = {'c', 'd', 'h', 's'}
+rank_to_letter = {v:k for k,v in RANK_ORDER.items()}
 
 def determine_position(hero_seat, button_seat, total_seats=9):
     diff = (hero_seat - button_seat) % total_seats
@@ -176,6 +175,8 @@ def parse_hand_advanced(content):
         'river_action': None,
         'river_opponents': 0,
         'river_cards': None,
+        'pot_size': 0.0,           # текущий банк (в долларах) на каждой улице
+        'last_bet': 0.0,           # последняя ставка Hero (в долларах)
     }
     blinds = re.search(r'\$([\d\.]+)/\$([\d\.]+)', content)
     if blinds:
@@ -217,7 +218,7 @@ def parse_hand_advanced(content):
         else:
             result['river_cards'] = river_match.group(1)
 
-    # Действия Hero по улицам
+    # Действия Hero по улицам и извлечение банка/ставок
     preflop_block = re.search(r'(?:HOLE CARDS.*?)(?=\*\*\*?\s*FLOP|\Z)', content, re.DOTALL | re.IGNORECASE)
     if preflop_block:
         match = re.search(r'Hero:\s*(folds|checks|calls|bets|raises)', preflop_block.group(0), re.IGNORECASE)
@@ -235,6 +236,13 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', flop_block.group(0)))
         players.discard('Hero')
         result['flop_opponents'] = len(players)
+        # Извлечь банк и ставку на флопе (упрощённо: ищем "Total pot" или сумму перед действием)
+        pot_match = re.search(r'Total pot \$([\d\.]+)', flop_block.group(0))
+        if pot_match:
+            result['pot_size'] = float(pot_match.group(1))
+        bet_match = re.search(r'Hero:\s+bets \$([\d\.]+)', flop_block.group(0))
+        if bet_match:
+            result['last_bet'] = float(bet_match.group(1))
 
     turn_block = re.search(r'(?:TURN.*?)(?=\*\*\*?\s*RIVER|\Z)', content, re.DOTALL | re.IGNORECASE)
     if turn_block:
@@ -244,6 +252,12 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', turn_block.group(0)))
         players.discard('Hero')
         result['turn_opponents'] = len(players)
+        pot_match = re.search(r'Total pot \$([\d\.]+)', turn_block.group(0))
+        if pot_match:
+            result['pot_size'] = float(pot_match.group(1))
+        bet_match = re.search(r'Hero:\s+bets \$([\d\.]+)', turn_block.group(0))
+        if bet_match:
+            result['last_bet'] = float(bet_match.group(1))
 
     river_block = re.search(r'(?:RIVER.*?)(?=\*\*\*?\s*SHOW DOWN|\Z)', content, re.DOTALL | re.IGNORECASE)
     if river_block:
@@ -253,71 +267,95 @@ def parse_hand_advanced(content):
         players = set(re.findall(r'([A-Za-z0-9_]+):\s*(?:folds|raises|calls|bets|checks)', river_block.group(0)))
         players.discard('Hero')
         result['river_opponents'] = len(players)
+        pot_match = re.search(r'Total pot \$([\d\.]+)', river_block.group(0))
+        if pot_match:
+            result['pot_size'] = float(pot_match.group(1))
+        bet_match = re.search(r'Hero:\s+bets \$([\d\.]+)', river_block.group(0))
+        if bet_match:
+            result['last_bet'] = float(bet_match.group(1))
 
     if result['flop_action'] in ['bets', 'raises']:
         result['flop_cbet'] = 1
     return result
 
-# ---------- Функции для дро-анализа ----------
-def parse_cards(cards_str):
-    """Возвращает список кортежей (rank, suit) для строки карт '7c 8s Th'"""
-    if not cards_str:
-        return []
-    parts = cards_str.split()
-    result = []
-    for p in parts:
-        if len(p) < 2:
-            continue
-        rank = p[0]
-        suit = p[1]
-        result.append((rank, suit))
-    return result
-
-def calculate_draws(hand_cards, board_cards):
+# ---------- Функции для анализа дро и шансов ----------
+def calculate_draws_and_odds(hero_cards, board_cards, pot_size=0, bet=0):
     """
-    hand_cards: строка '9h Jd'
-    board_cards: строка '4d 2s 8d' (флоп) или '4d 2s 8d 5h' (тёрн) или вся доска
-    Возвращает список дро, которые есть у Hero.
+    hero_cards: строка "9h Jd"
+    board_cards: строка "7c 8s Th" или "4d 2s 8d 5h As" (все карты стола)
+    pot_size: текущий банк в долларах
+    bet: размер ставки Hero или ставка, которую нужно коллировать (в долларах)
+    Возвращает строку с анализом дро, аутов, эквити и шансов банка.
     """
-    if not board_cards:
-        return []
-    all_cards = parse_cards(hand_cards) + parse_cards(board_cards)
-    ranks = [c[0] for c in all_cards]
+    if not hero_cards or not board_cards:
+        return ""
+    # Объединяем все карты
+    all_cards = hero_cards.split() + board_cards.split()
+    # Для расчёта аутов нужен полный список рангов/мастей
+    # Упрощённая логика: проверяем флеш-дро, стрит-дро, пару
     suits = [c[1] for c in all_cards]
-    rank_counts = Counter(ranks)
-    suit_counts = Counter(suits)
+    ranks = [RANK_ORDER.get(c[0], 0) for c in all_cards]
+    hero_ranks = [RANK_ORDER.get(hero_cards.split()[0][0], 0), RANK_ORDER.get(hero_cards.split()[1][0], 0)]
+    
     draws = []
-    # Флеш-дро: 4 карты одной масти
-    for suit, count in suit_counts.items():
-        if count == 4:
-            draws.append("🔹 Флеш-дро (4 карты одной масти)")
-        elif count == 3 and count == max(suit_counts.values()):
-            draws.append("🔹 Бэкдор-флеш-дро (3 карты одной масти)")
-    # Стрит-дро: проверим наличие 4 последовательных рангов (с учётом туза)
-    rank_values = [RANK_ORDER[r] for r in ranks]
-    rank_values_sorted = sorted(set(rank_values))
-    # Ищем 4 подряд идущих значения
-    for i in range(len(rank_values_sorted)-3):
-        if rank_values_sorted[i+3] - rank_values_sorted[i] == 3:
-            draws.append("🔹 Стрит-дро (открытый или гатшот)")
+    # Флеш-дро: если у Hero две карты одной масти, и на доске ещё минимум 2 карты той же масти
+    hero_suits = [c[1] for c in hero_cards.split()]
+    if hero_suits[0] == hero_suits[1]:
+        suit = hero_suits[0]
+        suited_on_board = sum(1 for c in board_cards.split() if c[1] == suit)
+        total_suited = suited_on_board + 2
+        if total_suited == 4:
+            outs_flush = 9  # 13 карт масти - 4 уже на руке/доске
+            draws.append(f"💧 Флеш-дро ({outs_flush} аутов)")
+        elif total_suited == 3:
+            draws.append(f"💧 Бэкдор-флеш (нужны две карты)")
+    # Стрит-дро (упрощённо: любые 4 последовательные карты среди всех, включая Hero)
+    all_rank_values = sorted(set(ranks + hero_ranks))
+    for i in range(len(all_rank_values) - 3):
+        if all_rank_values[i+3] - all_rank_values[i] <= 4:
+            draws.append("📏 Стрит-дро (8 аутов)")
             break
+    # Пара + дро
+    if len(set(ranks)) < len(ranks):
+        draws.append("🎯 Есть пара на доске – можно улучшить до трипса (2 аута)")
+    # Оценка эквити (правило 2 и 4)
+    if draws:
+        # Если есть флеш-дро и стрит-дро – около 12-15 аутов
+        total_outs = 0
+        if "Флеш-дро" in draws[0] and "8 аутов" in draws[0]:
+            total_outs = 9 + 8
+        elif "Флеш-дро" in draws[0]:
+            total_outs = 9
+        elif "Стрит-дро" in draws[0]:
+            total_outs = 8
+        else:
+            total_outs = 2  # трипс
+        # Эквити для флопа (2 аута * 4%)
+        if len(board_cards.split()) == 3:   # флоп
+            equity = min(total_outs * 4, 100)
+        elif len(board_cards.split()) == 4: # тёрн
+            equity = min(total_outs * 2, 100)
+        else:
+            equity = 0
+        draws.append(f"📈 Эквити ≈ {equity}% (примерно)")
     else:
-        # Проверим гатшот (3 из 5 подряд)
-        for i in range(len(rank_values_sorted)-2):
-            if rank_values_sorted[i+2] - rank_values_sorted[i] == 2:
-                draws.append("🔹 Гатшот-стрит-дро (недостаёт одной карты)")
-                break
-    # Есть ли у Hero пара на доске
-    hero_ranks = [c[0] for c in parse_cards(hand_cards)]
-    board_ranks = [c[0] for c in parse_cards(board_cards)]
-    if any(r in board_ranks for r in hero_ranks):
-        draws.append("🔹 Пара на доске (уже усиление)")
-    # Сет: если карманная пара и одна из карт доски совпадает
-    if len(hero_ranks) == 2 and hero_ranks[0] == hero_ranks[1] and hero_ranks[0] in board_ranks:
-        draws.append("🔹 Сет (трипс)")
-    return draws
+        draws.append("🔹 Нет сильных дро, рука слабая")
+    
+    # Шансы банка
+    odds_comment = ""
+    if pot_size > 0 and bet > 0:
+        pot_odds = bet / (pot_size + bet) * 100
+        odds_comment = f"\n💰 *Шансы банка:* {pot_odds:.1f}% ({bet:.2f} к {pot_size:.2f})"
+        if draws:
+            # Если есть эквити, сравнить
+            equity = [int(x.split('≈ ')[1].split('%')[0]) for x in draws if 'Эквити ≈' in x]
+            if equity and equity[0] > pot_odds:
+                odds_comment += " → колл выгоден (эквити выше шансов банка)"
+            elif equity:
+                odds_comment += " → колл невыгоден"
+    return "\n".join(draws) + odds_comment
 
-# ---------- Функции для объяснений ----------
+# ---------- Функции для объяснений и анализа ----------
 def explain_preflop(cards, position, opponents, stack, is_pair, suited, high, low):
     reasons = []
     if is_pair:
@@ -341,6 +379,37 @@ def explain_preflop(cards, position, opponents, stack, is_pair, suited, high, lo
     if stack < 20:
         reasons.append(f"🔹 Короткий стек ({stack:.0f} BB) – либо оллин, либо фолд")
     return "\n".join(reasons)
+
+def analyze_board_texture(board_cards):
+    if not board_cards:
+        return ""
+    cards = board_cards.split()
+    suits = [c[1] for c in cards]
+    ranks = [c[0] for c in cards]
+    rank_values = [RANK_ORDER.get(r, 0) for r in ranks]
+    is_monotone = len(set(suits)) == 1
+    is_paired = len(set(ranks)) < len(ranks)
+    suit_counts = {s: suits.count(s) for s in set(suits)}
+    flush_draw = any(count >= 2 for count in suit_counts.values())
+    sorted_ranks = sorted(rank_values)
+    straight_possible = False
+    if not is_paired and max(sorted_ranks) - min(sorted_ranks) <= 4:
+        straight_possible = True
+    if is_monotone:
+        texture = "💧 Монотонная доска – высокий риск флеша."
+    elif is_paired:
+        texture = "🪵 Парная доска – опасность фулл-хауса или трипса."
+    elif straight_possible:
+        texture = "📏 Координированная доска (возможен стрит)."
+    elif flush_draw:
+        texture = "💧 Есть флеш-дро."
+    else:
+        texture = "🍂 Сухая доска."
+    if flush_draw and not is_monotone:
+        texture += " Будьте осторожны: возможен флеш на тёрне/ривере."
+    if straight_possible and not is_paired:
+        texture += " Много стрит-дро."
+    return texture
 
 def get_postflop_prediction(parsed, street):
     if street == 'flop' and flop_model is None:
@@ -402,37 +471,6 @@ def get_postflop_prediction(parsed, street):
     action = encoder.inverse_transform([pred_enc])[0]
     return action, confidence, probs
 
-def analyze_board_texture(board_cards):
-    if not board_cards:
-        return ""
-    cards = board_cards.split()
-    suits = [c[1] for c in cards]
-    ranks = [c[0] for c in cards]
-    rank_values = [RANK_ORDER.get(r, 0) for r in ranks]
-    is_monotone = len(set(suits)) == 1
-    is_paired = len(set(ranks)) < len(ranks)
-    suit_counts = Counter(suits)
-    flush_draw = any(count >= 2 for count in suit_counts.values())
-    sorted_ranks = sorted(rank_values)
-    straight_possible = False
-    if not is_paired and max(sorted_ranks) - min(sorted_ranks) <= 4:
-        straight_possible = True
-    if is_monotone:
-        texture = "💧 Монотонная доска (три карты одной масти) – высокий риск флеша."
-    elif is_paired:
-        texture = "🪵 Парная доска – опасность фулл-хауса или трипса."
-    elif straight_possible:
-        texture = "📏 Координированная доска (возможен стрит)."
-    elif flush_draw:
-        texture = "💧 Есть флеш-дро (две карты одной масти)."
-    else:
-        texture = "🍂 Сухая доска – маловероятно, что у оппонентов сильные комбинации."
-    if flush_draw and not is_monotone:
-        texture += " Будьте осторожны: возможен флеш на тёрне/ривере."
-    if straight_possible and not is_paired:
-        texture += " Много стрит-дро."
-    return texture
-
 # ---------- Команды ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -442,7 +480,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — как пользоваться\n"
         "/about — о боте\n"
         "/profile — ваш профиль\n"
-        "/analysis — детальный разбор последней руки\n"
+        "/analysis — детальный разбор последней руки (включая дро, шансы банка)\n"
         "/explain — объяснение последнего предсказания\n"
         "/flop — предсказание на флопе\n"
         "/turn — предсказание на тёрне\n"
@@ -462,7 +500,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "4️⃣ Получите предсказание: 🤚 Fold, 📞 Call, 📈 Raise или ✅ Check.\n"
         "5️⃣ Оцените точность кнопками ✅/❌ – это поможет улучшить модель.\n\n"
         "✨ *Дополнительно:*\n"
-        "/analysis – подробный разбор последней руки (включая постфлоп, карты стола, оценку действий, дро-комбинации)\n"
+        "/analysis – подробный разбор последней руки (включая анализ дро и шансов банка)\n"
         "/explain – понятное объяснение, почему бот дал такой совет\n"
         "/flop, /turn, /river – предсказания на соответствующих улицах (если есть данные)"
     )
@@ -470,12 +508,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Poker Oracle Bot v2.5* (с анализом дро-комбинаций)\n\n"
+        "🤖 *Poker Oracle Bot v2.5* (с анализом дро, аутов, эквити и шансов банка)\n\n"
         "🧠 *Модели:* Random Forest для префлопа, флопа, тёрна, ривера.\n"
         "📊 *Признаки:* позиция, сила руки, стек, оппоненты, предыдущие действия.\n"
         "♠️ *Поддерживаемые румы:* PokerStars, GG Poker, PartyPoker.\n"
         "📈 *Функции:* предсказание действий, сбор обратной связи, переобучение, объяснение решений, оценка действий пользователя.\n"
-        "🃏 *Новое:* детализированные объяснения для постфлопа, анализ текстуры доски и конкретных дро-комбинаций (флеш-дро, стрит-дро, сет и т.д.).\n\n"
+        "🃏 *Новое:* расчёт аутов, флеш-дро, стрит-дро, эквити, шансов банка.\n\n"
         "© 2026 | Сделано с любовью к покеру и AI"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -520,12 +558,15 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Флоп
     if last.get('flop_cards'):
         texture = analyze_board_texture(last['flop_cards'])
-        draws = calculate_draws(last['cards'], last['flop_cards'])
-        text += f"\n♣️ *Флоп:* {last['flop_cards']}\n   *Текстура:* {texture}\n"
-        if draws:
-            text += "   *Ваши возможности:* " + ", ".join(draws) + "\n"
+        text += f"\n♣️ *Флоп:* {last['flop_cards']}\n   *Текстура:* {texture}"
+        # Анализ дро и шансов для флопа
+        pot = parsed.get('pot_size', 0)
+        bet = parsed.get('last_bet', 0)
+        draws_analysis = calculate_draws_and_odds(last['cards'], last['flop_cards'], pot, bet)
+        if draws_analysis:
+            text += f"\n   *Анализ:* {draws_analysis}"
         if last.get('flop_action'):
-            text += f"   *Ваше действие:* {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
+            text += f"\n   *Ваше действие:* {last['flop_action'].upper()}, оппонентов — {last['flop_opponents']}"
             if last.get('flop_cbet'):
                 text += " (конт-бет ✅)"
             flop_pred, flop_conf, _ = get_postflop_prediction(parsed, 'flop')
@@ -534,42 +575,40 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text += f"\n   ✅ *Оценка:* Ваше действие совпадает с рекомендацией модели ({flop_pred.upper()}, уверенность {flop_conf:.1%})."
                 else:
                     text += f"\n   ⚠️ *Оценка:* Модель рекомендовала {flop_pred.upper()} (уверенность {flop_conf:.1%}), а вы сделали {last['flop_action'].upper()}."
-            else:
-                text += "\n   ⚠️ *Оценка:* Нет модели для флопа."
     # Тёрн
     if last.get('turn_cards'):
         texture = analyze_board_texture(last['turn_cards'])
-        draws = calculate_draws(last['cards'], last['turn_cards'])
-        text += f"\n♦️ *Тёрн:* {last['turn_cards']}\n   *Текстура:* {texture}\n"
-        if draws:
-            text += "   *Ваши возможности:* " + ", ".join(draws) + "\n"
+        text += f"\n♦️ *Тёрн:* {last['turn_cards']}\n   *Текстура:* {texture}"
+        pot = parsed.get('pot_size', 0)
+        bet = parsed.get('last_bet', 0)
+        draws_analysis = calculate_draws_and_odds(last['cards'], last['turn_cards'], pot, bet)
+        if draws_analysis:
+            text += f"\n   *Анализ:* {draws_analysis}"
         if last.get('turn_action'):
-            text += f"   *Ваше действие:* {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
+            text += f"\n   *Ваше действие:* {last['turn_action'].upper()}, оппонентов — {last['turn_opponents']}"
             turn_pred, turn_conf, _ = get_postflop_prediction(parsed, 'turn')
             if turn_pred:
                 if turn_pred == last['turn_action']:
                     text += f"\n   ✅ *Оценка:* Ваше действие совпадает с рекомендацией модели ({turn_pred.upper()}, уверенность {turn_conf:.1%})."
                 else:
                     text += f"\n   ⚠️ *Оценка:* Модель рекомендовала {turn_pred.upper()} (уверенность {turn_conf:.1%}), а вы сделали {last['turn_action'].upper()}."
-            else:
-                text += "\n   ⚠️ *Оценка:* Нет модели для тёрна."
     # Ривер
     if last.get('river_cards'):
         texture = analyze_board_texture(last['river_cards'])
-        draws = calculate_draws(last['cards'], last['river_cards'])
-        text += f"\n♥️ *Ривер:* {last['river_cards']}\n   *Текстура:* {texture}\n"
-        if draws:
-            text += "   *Ваши возможности:* " + ", ".join(draws) + "\n"
+        text += f"\n♥️ *Ривер:* {last['river_cards']}\n   *Текстура:* {texture}"
+        pot = parsed.get('pot_size', 0)
+        bet = parsed.get('last_bet', 0)
+        draws_analysis = calculate_draws_and_odds(last['cards'], last['river_cards'], pot, bet)
+        if draws_analysis:
+            text += f"\n   *Анализ:* {draws_analysis}"
         if last.get('river_action'):
-            text += f"   *Ваше действие:* {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
+            text += f"\n   *Ваше действие:* {last['river_action'].upper()}, оппонентов — {last['river_opponents']}"
             river_pred, river_conf, _ = get_postflop_prediction(parsed, 'river')
             if river_pred:
                 if river_pred == last['river_action']:
                     text += f"\n   ✅ *Оценка:* Ваше действие совпадает с рекомендацией модели ({river_pred.upper()}, уверенность {river_conf:.1%})."
                 else:
                     text += f"\n   ⚠️ *Оценка:* Модель рекомендовала {river_pred.upper()} (уверенность {river_conf:.1%}), а вы сделали {last['river_action'].upper()}."
-            else:
-                text += "\n   ⚠️ *Оценка:* Нет модели для ривера."
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -592,25 +631,32 @@ async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"🔍 *Объяснение на префлопе:* {last['action'].upper()} (уверенность {last['confidence']:.0%})\n\n{reasons_pre}\n\n{conclusion_pre}\n\n"
 
     for street in ['flop', 'turn', 'river']:
-        action = parsed.get(f'{street}_action')
-        cards = parsed.get(f'{street}_cards')
+        action_key = f'{street}_action'
+        cards_key = f'{street}_cards'
+        action = parsed.get(action_key)
+        cards = parsed.get(cards_key)
         if action:
             pred_action, conf, _ = get_postflop_prediction(parsed, street)
             if pred_action:
-                emoji = {'flop':'♣️', 'turn':'♦️', 'river':'♥️'}.get(street, '')
-                texture = analyze_board_texture(cards) if cards else ""
-                draws = calculate_draws(last['cards'], cards) if cards else []
+                emoji = {'flop': '♣️', 'turn': '♦️', 'river': '♥️'}[street]
+                if cards:
+                    texture = analyze_board_texture(cards)
+                    texture_str = f"\n   📌 *Анализ доски:* {texture}"
+                    # Дополнительно: анализ дро для этой улицы
+                    pot = parsed.get('pot_size', 0)
+                    bet = parsed.get('last_bet', 0)
+                    draws_analysis = calculate_draws_and_odds(last['cards'], cards, pot, bet)
+                    if draws_analysis:
+                        texture_str += f"\n   🧩 *Дро и шансы:* {draws_analysis}"
+                else:
+                    texture_str = ""
                 text += f"{emoji} *{street.upper()}* (реальное действие: {action.upper()})\n"
-                if texture:
-                    text += f"   📌 *Текстура доски:* {texture}\n"
-                if draws:
-                    text += f"   🃏 *Ваши дро:* {', '.join(draws)}\n"
-                text += f"   🎯 *Рекомендация модели:* {pred_action.upper()} (уверенность {conf:.0%})\n"
+                text += f"   🎯 *Рекомендация модели:* {pred_action.upper()} (уверенность {conf:.0%}){texture_str}\n"
                 if pred_action == 'fold':
                     text += "   ✨ *Почему:* Рука слабая, слишком много оппонентов или опасная доска.\n"
                 elif pred_action == 'call':
                     text += "   ✨ *Почему:* Рука имеет потенциал, но не настолько сильная для рейза.\n"
-                elif pred_action in ['bet','raise']:
+                elif pred_action == 'bet' or pred_action == 'raise':
                     text += "   ✨ *Почему:* У вас сильная рука или хорошая возможность для блефа.\n"
                 elif pred_action == 'check':
                     text += "   ✨ *Почему:* Нет необходимости ставить, можно посмотреть бесплатную карту.\n"
@@ -638,6 +684,13 @@ async def postflop_command(update: Update, context: ContextTypes.DEFAULT_TYPE, s
         return
     emoji = {'fold':'🤚', 'call':'📞', 'bet':'💰', 'raise':'📈', 'check':'✅'}
     reply = f"{cards_text}\n🎯 *Предсказание на {street.upper()}:* {pred_action.upper()} {emoji.get(pred_action, '')} (уверенность {confidence:.1%})"
+    # Добавим анализ дро, если есть карты
+    if cards and parsed.get('hero_hole_cards'):
+        pot = parsed.get('pot_size', 0)
+        bet = parsed.get('last_bet', 0)
+        draws = calculate_draws_and_odds(parsed['hero_hole_cards'], cards, pot, bet)
+        if draws:
+            reply += f"\n\n🧩 *Анализ:* {draws}"
     await update.message.reply_text(reply, parse_mode='Markdown')
 
 async def flop(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -768,8 +821,8 @@ async def predict(update: Update, text: str, context: ContextTypes.DEFAULT_TYPE)
                  InlineKeyboardButton("❌ Неверно", callback_data=f"feedback_{pred_id}_no")]]
     await update.message.reply_text(reply, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-    high_char = RANK_LETTER.get(card_feats['high_card_rank'], str(card_feats['high_card_rank']))
-    low_char = RANK_LETTER.get(card_feats['low_card_rank'], str(card_feats['low_card_rank']))
+    high_char = rank_to_letter.get(card_feats['high_card_rank'], str(card_feats['high_card_rank']))
+    low_char = rank_to_letter.get(card_feats['low_card_rank'], str(card_feats['low_card_rank']))
     context.user_data['last_hand_info'] = {
         'cards': parsed['hero_hole_cards'],
         'position': parsed['hero_position'],
@@ -810,7 +863,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("🙏 Спасибо за обратную связь!")
 
-# ---------- Запуск ----------
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
